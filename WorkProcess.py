@@ -72,10 +72,11 @@ log_text = None
 # 미니맵/창 핸들 캐시 (pygetwindow 오버헤드 감소용)
 cached_game_window = None
 
-# 위치 로그 샘플링/중복 방지용 상태
-last_coord_log_time = 0.0
-last_status_log_time = 0.0
-last_status_log_msg = ""
+# 현재 상태 표시용 변수 (GUI 업데이트)
+status_coord_var = None
+status_area_var = None
+status_time_var = None
+status_monster_var = None
 # root = tk.Tk()
 
 # 방향키 상태 변수 (중복 입력 방지)
@@ -236,16 +237,34 @@ def cast_qe_buff():
 def color_match(color1, color2, tolerance=20):
     return all(abs(c1 - c2) <= tolerance for c1, c2 in zip(color1, color2))
 
+def update_status_display(x, y, area, elapsed, monster):
+    """현재 상태를 고정 영역에 표시 (로그 대신 값 업데이트)"""
+    if status_coord_var is None or status_area_var is None or status_time_var is None or status_monster_var is None:
+        return
+    coord_text = f"{x},{y}" if x is not None and y is not None else "-"
+    area_text = area if area is not None else "-"
+    time_text = f"{elapsed:.1f}초" if elapsed is not None else "-"
+    monster_text = "O" if monster else "X"
+
+    def apply():
+        status_coord_var.set(coord_text)
+        status_area_var.set(area_text)
+        status_time_var.set(time_text)
+        status_monster_var.set(monster_text)
+
+    try:
+        root.after(0, apply)
+    except Exception:
+        apply()
+
 def location_detector():
     global current_position, last_position, position_start_time, elapsed_time, new_position, monster_detected
-    global last_coord_log_time, last_status_log_time, last_status_log_msg
     grace_period = 1.5  # 🕒 None이 연속으로 나타나도 유지할 최대 시간
     none_start_time = None  # 🕒 None이 최초로 감지된 시간
 
     # 🔧 자주 쓰는 함수/데이터 로컬 바인딩 (성능 미세 최적화, 동작 동일)
     time_time = time.time
     sleep = time.sleep
-    log = log_message
     area_items = list(AREA_OBJECTS.items())
 
     while not stop_event.is_set():  # 🟢 stop_event가 설정되면 루프 종료
@@ -258,25 +277,9 @@ def location_detector():
 
             elapsed = time_time() - none_start_time
             if elapsed >= grace_period:  # 🕒 grace_period를 넘기면 last_position 초기화
-                # 동일 경고를 너무 자주 찍지 않도록 샘플링
-                msg = "⚠ 위치 확인 불가, 일정 시간 None 유지 → 위치 초기화"
-                now = time_time()
-                if msg != last_status_log_msg or (now - last_status_log_time) >= 0.5:
-                    log(msg)
-                    last_status_log_msg = msg
-                    last_status_log_time = now
                 last_position = None
                 position_start_time = None
-            else:
-                # 남은 시간 안내 로그도 샘플링 + 중복 방지
-                remaining = grace_period - elapsed
-                msg = f"⚠ 좌표 확인 불가, {remaining:.1f}초 유지 중..."
-                now = time_time()
-                if msg != last_status_log_msg or (now - last_status_log_time) >= 0.5:
-                    log(msg)
-                    last_status_log_msg = msg
-                    last_status_log_time = now
-
+            update_status_display(None, None, last_position, 0.0 if position_start_time else None, monster_detected)
             sleep(0.2)
             continue  # 다음 루프로 이동
 
@@ -293,19 +296,12 @@ def location_detector():
         # 머문 시간 계산
         elapsed_time = time_time() - position_start_time if position_start_time else 0
 
-        # 위치가 변경되었을 때만 시간 기록 + 변경 로그
+        # 위치가 변경되었을 때만 시간 기록
         if new_position != last_position:
             if new_position is not None:
                 position_start_time = time_time()  # 새로운 위치에서 시간 초기화
                 last_position = new_position
-                log(f"🟢 위치 변경: {new_position}")
-
-        # 현재 좌표와 머문 시간 출력 (로그는 0.1초가 아니라 최소 0.5초 간격으로만 찍기)
-        now = time_time()
-        if (now - last_coord_log_time) >= 0.5:
-            monster_icon = "O" if monster_detected else "X"
-            log(f"Coord:{x},{y} | Area:{new_position} | Time:{elapsed_time:.1f}초 | Monster:{monster_icon}")
-            last_coord_log_time = now
+        update_status_display(x, y, new_position, elapsed_time, monster_detected)
 
         sleep(0.1)  # 너무 빠르게 체크하지 않도록 조절
 
@@ -652,8 +648,8 @@ def on_w_pressed(_event):
 # GUI: grid로 로그 영역이 항상 공간을 갖도록 (윈도우·맥 공통)
 root = tk.Tk()
 root.title("WorkProcess")
-root.geometry("500x360")
-root.minsize(480, 320)
+root.geometry("420x320")
+root.minsize(400, 300)
 root.protocol("WM_DELETE_WINDOW", on_closing)
 root.grid_rowconfigure(3, weight=1, minsize=140)  # 맥에서 로그 영역 최소 높이 보장
 root.grid_columnconfigure(0, weight=1)
@@ -666,44 +662,50 @@ if IS_MAC:
     root.option_add("*Text.selectBackground", "#0a84ff")
     root.option_add("*Text.selectForeground", "white")
 
-status_label = tk.Label(root, text="상태: 실행 중", font=("Arial", 10))
-status_label.grid(row=0, column=0, sticky="ew", padx=6, pady=4)
+status_label = tk.Label(root, text="상태: 실행 중", font=("Arial", 9))
+status_label.grid(row=0, column=0, sticky="ew", padx=4, pady=2)
 
 # 제어 버튼 (맥에서는 키보드 후크 미동작이므로 필수, 윈도우에서도 보조용)
 btn_frame = tk.Frame(root)
-btn_frame.grid(row=1, column=0, sticky="ew", padx=6, pady=4)
-tk.Button(btn_frame, text="재개 (F1)", command=start_command, width=10).pack(side=tk.LEFT, padx=2)
-tk.Button(btn_frame, text="일시정지 (F2)", command=pause_command, width=12).pack(side=tk.LEFT, padx=2)
-tk.Button(btn_frame, text="창 1280x720 (F3)", command=resize_game_window, width=14).pack(side=tk.LEFT, padx=2)
-tk.Button(btn_frame, text="버프 타이머 (F4)", command=start_buff_timer, width=14).pack(side=tk.LEFT, padx=2)
+btn_frame.grid(row=1, column=0, sticky="ew", padx=4, pady=2)
+btn_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
-# 설정 프레임 (값만 표시·변경 가능, 로직 연동은 추후)
-settings_frame = tk.LabelFrame(root, text="설정 (기능 연동 예정)", font=("Arial", 9))
-settings_frame.grid(row=2, column=0, sticky="ew", padx=6, pady=4)
+btn_resume = tk.Button(btn_frame, text="재개(F1)", command=start_command, width=9)
+btn_pause = tk.Button(btn_frame, text="일시정지(F2)", command=pause_command, width=10)
+btn_resize = tk.Button(btn_frame, text="1280x720(F3)", command=resize_game_window, width=11)
+btn_buff = tk.Button(btn_frame, text="버프 타이머(F4)", command=start_buff_timer, width=12)
 
-row1 = tk.Frame(settings_frame)
-row1.pack(fill=tk.X, padx=4, pady=2)
-tk.Label(row1, text="3층 목표 X:", width=12, anchor="w").pack(side=tk.LEFT)
-var_target_x = tk.IntVar(value=64)
-tk.Spinbox(row1, from_=1, to=999, width=6, textvariable=var_target_x).pack(side=tk.LEFT, padx=2)
+btn_resume.grid(row=0, column=0, padx=3, pady=1, sticky="ew")
+btn_pause.grid(row=0, column=1, padx=3, pady=1, sticky="ew")
+btn_resize.grid(row=0, column=2, padx=3, pady=1, sticky="ew")
+btn_buff.grid(row=0, column=3, padx=3, pady=1, sticky="ew")
 
-row2 = tk.Frame(settings_frame)
-row2.pack(fill=tk.X, padx=4, pady=2)
-tk.Label(row2, text="버프 주기(초):", width=12, anchor="w").pack(side=tk.LEFT)
-var_buff_interval = tk.IntVar(value=90)
-tk.Spinbox(row2, from_=1, to=9999, width=6, textvariable=var_buff_interval).pack(side=tk.LEFT, padx=2)
+# 상태 프레임 (현재 위치/시간/몬스터 상태 표시)
+status_frame = tk.LabelFrame(root, text="상태", font=("Arial", 9))
+status_frame.grid(row=2, column=0, sticky="ew", padx=4, pady=2)
+status_frame.grid_columnconfigure(1, weight=1)
 
-row3 = tk.Frame(settings_frame)
-row3.pack(fill=tk.X, padx=4, pady=2)
-tk.Label(row3, text="W 수동 일시정지(초):", width=18, anchor="w").pack(side=tk.LEFT)
-var_manual_pause_sec = tk.DoubleVar(value=1.0)
-tk.Entry(row3, width=8, textvariable=var_manual_pause_sec).pack(side=tk.LEFT, padx=2)
-tk.Label(row3, text="(예: 1.0, 2.5)", font=("Arial", 8), fg="gray").pack(side=tk.LEFT)
+status_coord_var = tk.StringVar(value="-")
+status_area_var = tk.StringVar(value="-")
+status_time_var = tk.StringVar(value="-")
+status_monster_var = tk.StringVar(value="X")
+
+tk.Label(status_frame, text="좌표:", width=6, anchor="w").grid(row=0, column=0, sticky="w", padx=3, pady=1)
+tk.Label(status_frame, textvariable=status_coord_var, anchor="w").grid(row=0, column=1, sticky="w", padx=3, pady=1)
+
+tk.Label(status_frame, text="위치:", width=6, anchor="w").grid(row=1, column=0, sticky="w", padx=3, pady=1)
+tk.Label(status_frame, textvariable=status_area_var, anchor="w").grid(row=1, column=1, sticky="w", padx=3, pady=1)
+
+tk.Label(status_frame, text="머문:", width=6, anchor="w").grid(row=2, column=0, sticky="w", padx=3, pady=1)
+tk.Label(status_frame, textvariable=status_time_var, anchor="w").grid(row=2, column=1, sticky="w", padx=3, pady=1)
+
+tk.Label(status_frame, text="몬스터:", width=6, anchor="w").grid(row=3, column=0, sticky="w", padx=3, pady=1)
+tk.Label(status_frame, textvariable=status_monster_var, anchor="w").grid(row=3, column=1, sticky="w", padx=3, pady=1)
 
 # 로그: 맥은 Text 렌더링 버그 회피를 위해 Listbox, 윈도우는 ScrolledText
 if IS_MAC:
     log_frame = tk.Frame(root)
-    log_frame.grid(row=3, column=0, sticky="nsew", padx=6, pady=4)
+    log_frame.grid(row=3, column=0, sticky="nsew", padx=4, pady=2)
     log_frame.grid_rowconfigure(0, weight=1)
     log_frame.grid_columnconfigure(0, weight=1)
     log_text = tk.Listbox(
@@ -719,13 +721,13 @@ if IS_MAC:
     log_text.insert(tk.END, "[INFO] 로그 준비됨.")
 else:
     log_text = ScrolledText(
-        root, height=10, width=60,
+        root, height=9, width=48,
         bg="white", fg="black", insertbackground="black",
-        font=("Consolas", 10),
+        font=("Consolas", 9),
         highlightthickness=1, highlightbackground="#ccc",
         wrap=tk.WORD,
     )
-    log_text.grid(row=3, column=0, sticky="nsew", padx=6, pady=4)
+    log_text.grid(row=3, column=0, sticky="nsew", padx=4, pady=2)
     log_text.insert(tk.END, "[INFO] 로그 준비됨.\n")
     log_text.see(tk.END)
 

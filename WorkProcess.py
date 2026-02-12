@@ -1,3 +1,7 @@
+import os
+import sys
+# 맥: 시스템 Tk 사용 시 deprecated 경고 억제 (tkinter import 전에 설정)
+os.environ["TK_SILENCE_DEPRECATION"] = "1"
 
 import threading
 import time
@@ -9,12 +13,15 @@ import keyboard
 import random
 import tkinter as tk
 from tkinter.scrolledtext import ScrolledText
-import sys
-import os
 from dataclasses import dataclass
 import pytesseract
 
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+# OS 구분 (맥에서 키보드 후크 등 권한 이슈로 예외 처리할 때 사용)
+IS_MAC = sys.platform == "darwin"
+IS_WINDOWS = sys.platform == "win32"
+
+if IS_WINDOWS:
+    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 # 몬스터 색상 범위(HSV). 다크 틸 핵심색 기준
 MONSTER_COLOR_LOWER = (85, 70, 25)
@@ -79,7 +86,6 @@ buff_timer_enabled = False
 last_buff_time = 0
 BUFF_INTERVAL_SEC = 90  # F4 기준 90초
 buff_pending = False
-FLOOR3_TO_3_2_DELAY_SEC = 60
 manual_pause_until = 0
 monster_detected = None
 
@@ -330,248 +336,69 @@ def steerage(x_min, x_max):
         else:
             direction = "left"  # 🔄 방향 전환
 
-# 2. 커맨더 로직 (플레이어 위치에 따라 방향키 입력)
+# 2. 커맨더 로직 (플레이어 위치에 따라 방향키 입력) — 3층(floor3)에서만 동작
 def command_player():
     global new_position, elapsed_time, player_position, skill_count, buff, step, monster_detected
     global buff_timer_enabled, last_buff_time, manual_pause_until, buff_pending
     global moving_up, moving_down, moving_left, moving_right, direction
 
-    # floor3 관련 구역만 사용
-    floor3 = AREA_OBJECTS["floor3"]
-    
-    eventX = 0
     last_face_time = 0
-    last_skill_time = 0
     in_target_range = False
-    floor3_2_in_range = False
-    floor3_2_face_time = 0
-    floor3_2_hunt_start = None
-    floor3_2_move_to_64 = False
-    floor3_2_drop_done = False
-    floor3_2_at64_start = None
-    floor3_2_at64_locked = False
-    floor3_2_44_hunt_start = None
-    floor3_2_drop_pending = False
-    floor3_2_last_drop_try = 0
-    floor3_1_drop_done = False
-    floor3_1_enter_time = None
-    floor3_1_drop_ready = False
-    floor3_1_to_3_2_done = False
-    floor3_2_44_locked = False
-    floor3_2_move_skill_used = False
-    floor3_hold_start = None
     step = 0
     skill_count = 0
 
-    while not stop_event.is_set(): # 🟢 stop_event가 설정되면 루프 종료
+    while not stop_event.is_set():
         if time.time() < manual_pause_until:
             cast_ice_strike_not_use()
             release_movement()
             time.sleep(0.05)
             continue
-        if pause_event.is_set():  # 일시 정지 상태면
+        if pause_event.is_set():
             time.sleep(0.1)
             continue
 
-        x, y = player_position  # 서칭된 좌표 가져오기
+        x, y = player_position
 
-        if new_position != "floor3_2":
-            floor3_2_hunt_start = None
-            floor3_2_move_to_64 = False
-            floor3_2_in_range = False
-            floor3_2_drop_done = False
-            floor3_2_at64_start = None
-            floor3_2_at64_locked = False
-            floor3_2_drop_pending = False
-            floor3_2_last_drop_try = 0
-            floor3_2_44_locked = False
-            floor3_2_44_hunt_start = None
-            floor3_2_move_skill_used = False
+        # 3층(floor3) 외에는 키만 풀고 동작 없음
         if new_position != "floor3":
-            floor3_hold_start = None
-
-        if new_position != "floor3_1":
-            floor3_1_drop_done = False
-            floor3_1_enter_time = None
-            floor3_1_drop_ready = False
-            floor3_1_to_3_2_done = False
-
-        if new_position == "iso_point":
-            # 외딴발판: 잠깐 멈춘 뒤 우측 점프로 복귀
             release_movement()
             cast_ice_strike_not_use()
             time.sleep(0.1)
+            continue
+
+        # 3층: x=64로 이동, 왼쪽 바라보기, 사냥·버프
+        target_x = 64
+        eventX = x - target_x
+        if abs(eventX) <= 2:
+            release_movement()
+            if not in_target_range and time.time() - last_face_time >= 0.5:
+                keyboard.press("left")
+                time.sleep(random.uniform(0.05, 0.09))
+                keyboard.release("left")
+                last_face_time = time.time()
+                log_message("floor3: x=64 도착, 왼쪽 바라봄")
+            in_target_range = True
+        elif eventX > 2:
+            in_target_range = False
+            press_left()
+        else:
+            in_target_range = False
             press_right()
-            time.sleep(random.uniform(0.08, 0.12))
-            press_jump()
-        elif new_position == "floor3_1":
-            if floor3_1_enter_time is None:
-                floor3_1_enter_time = time.time()
-            if floor3_2_drop_pending:
-                floor3_1_drop_ready = True
-            # 3_1(36~40)에서 우측 점프 + 스킬로 3_2 복귀
-            if not floor3_1_to_3_2_done and 36 <= x <= 40:
-                release_movement()
-                press_right()
-                time.sleep(random.uniform(0.08, 0.12))
-                press_jump()
-                cast_ice_strike_use()
-                time.sleep(random.uniform(0.05, 0.08))
-                cast_ice_strike_not_use()
-                floor3_1_to_3_2_done = True
-            if floor3_1_drop_ready and not floor3_1_drop_done and time.time() - floor3_1_enter_time >= 0.3:
-                release_movement()
-                press_down_jump()
-                floor3_1_drop_done = True
-                floor3_2_drop_pending = False
-                floor3_1_drop_ready = False
-        elif new_position == "floor3_2":
-            if floor3_2_drop_pending and 63 <= x <= 65 and not monster_detected:
-                if time.time() - floor3_2_last_drop_try >= 0.6:
-                    cast_ice_strike_not_use()
-                    time.sleep(0.05)
-                    press_down_jump()
-                    floor3_2_last_drop_try = time.time()
-            if floor3_2_hunt_start is None:
-                floor3_2_hunt_start = time.time()
-                floor3_2_move_to_64 = False
-                floor3_2_at64_start = None
-                floor3_2_at64_locked = False
-                floor3_2_44_hunt_start = None
-                floor3_2_move_skill_used = False
 
-            # 10초 사냥 후 x64로 이동
-            if time.time() - floor3_2_hunt_start >= 10:
-                floor3_2_move_to_64 = True
-                floor3_2_at64_locked = False
+        if monster_detected and eventX >= -2:
+            cast_ice_strike_use()
+        else:
+            cast_ice_strike_not_use()
 
-            if floor3_2_move_to_64:
-                if monster_detected:
-                    if floor3_2_at64_locked and 62 <= x <= 66:
-                        release_movement()
-                    elif x < 63 and not floor3_2_at64_locked:
-                        press_right()
-                    elif x > 65 and not floor3_2_at64_locked:
-                        press_left()
-                    if not floor3_2_move_skill_used:
-                        cast_teleport()
-                        floor3_2_move_skill_used = True
-                else:
-                    cast_ice_strike_not_use()
-                    if floor3_2_at64_locked and 62 <= x <= 66:
-                        release_movement()
-                    elif x < 63 and not floor3_2_at64_locked:
-                        press_right()
-                    elif x > 65 and not floor3_2_at64_locked:
-                        press_left()
-                    else:
-                        release_movement()
-                        if not floor3_2_at64_locked and time.time() - floor3_2_face_time >= 0.5:
-                            keyboard.press("left")
-                            time.sleep(random.uniform(0.05, 0.09))
-                            keyboard.release("left")
-                            floor3_2_face_time = time.time()
-                        floor3_2_at64_locked = True
+        if buff_timer_enabled:
+            if time.time() - last_buff_time >= BUFF_INTERVAL_SEC:
+                buff_pending = True
+            if buff_pending and not monster_detected:
+                cast_qe_buff()
+                last_buff_time = time.time()
+                buff_pending = False
 
-                if floor3_2_at64_locked:
-                    if floor3_2_at64_start is None:
-                        floor3_2_at64_start = time.time()
-                    # 64에서 5초 사냥
-                    if time.time() - floor3_2_at64_start < 5:
-                        # 몬스터 O일 때 스킬 사용
-                        if monster_detected:
-                            cast_ice_strike_use()
-                        else:
-                            cast_ice_strike_not_use()
-                    else:
-                        if not monster_detected:
-                            cast_ice_strike_not_use()
-                            time.sleep(0.05)
-                            press_down_jump()
-                            floor3_2_drop_pending = True
-                            floor3_2_last_drop_try = time.time()
-                        else:
-                            floor3_2_drop_pending = True
-                            floor3_2_last_drop_try = time.time()
-            else:
-                # 진입 범위: 45~47, 유지 범위: 44~48
-                if floor3_2_44_locked and 44 <= x <= 48:
-                    release_movement()
-                    cast_ice_strike_not_use()
-                elif x < 45:
-                    floor3_2_in_range = False
-                    floor3_2_44_locked = False
-                    press_right()
-                elif x > 47:
-                    floor3_2_in_range = False
-                    floor3_2_44_locked = False
-                    press_left()
-                else:
-                    release_movement()
-                    if not floor3_2_44_locked and time.time() - floor3_2_face_time >= 0.5:
-                        keyboard.press("right")
-                        time.sleep(random.uniform(0.05, 0.09))
-                        keyboard.release("right")
-                        floor3_2_face_time = time.time()
-                    floor3_2_44_locked = True
-                    floor3_2_in_range = True
-                    if floor3_2_44_hunt_start is None:
-                        floor3_2_44_hunt_start = time.time()
-
-                # 44에서 5초 사냥
-                if floor3_2_44_hunt_start and time.time() - floor3_2_44_hunt_start < 5:
-                    if monster_detected:
-                        cast_ice_strike_use()
-                    else:
-                        cast_ice_strike_not_use()
-                else:
-                    cast_ice_strike_not_use()
-        elif new_position == "floor3":
-            target_x = 64
-            eventX = x - target_x
-            if abs(eventX) <= 2:
-                release_movement()
-                if not in_target_range and time.time() - last_face_time >= 0.5:
-                    keyboard.press("left")
-                    time.sleep(random.uniform(0.05, 0.09))
-                    keyboard.release("left")
-                    last_face_time = time.time()
-                    log_message("floor3: x=64 도착, 왼쪽 바라봄")
-                in_target_range = True
-                if floor3_hold_start is None:
-                    floor3_hold_start = time.time()
-            elif eventX > 2:
-                in_target_range = False
-                press_left()
-            else:
-                in_target_range = False
-                press_right()
-
-            if floor3_hold_start and time.time() - floor3_hold_start >= FLOOR3_TO_3_2_DELAY_SEC:
-                if not monster_detected:
-                    press_left()
-                    press_jump()
-                    floor3_hold_start = None
-                else:
-                    # 몬스터가 있으면 계속 사냥
-                    pass
-            
-            # 몬스터 O일 때 스킬 사용
-            if monster_detected and eventX >= -2:
-                cast_ice_strike_use()
-            else:
-                cast_ice_strike_not_use()
-
-            # 몬스터 없을 때만 버프(Q,E) 사용
-            if buff_timer_enabled:
-                if time.time() - last_buff_time >= BUFF_INTERVAL_SEC:
-                    buff_pending = True
-                if buff_pending and not monster_detected:
-                    cast_qe_buff()
-                    last_buff_time = time.time()
-                    buff_pending = False
-
-        time.sleep(0.1)  # 일정 주기마다 실행
+        time.sleep(0.1)
 
 def monster_detector():
     global monster_detected
@@ -602,28 +429,46 @@ def monster_detector():
 
             time.sleep(0.5)
 
-# GUI 로그 출력 함수
-def log_message(msg):
-    if log_text is None or not log_text.winfo_exists():
-        print(f"[WARNING] 로그 기록 실패: {msg}")  # 디버깅용
-        return  
-    
-    def update_log():
-        log_text.insert(tk.END, msg + "\n")
-        trim_log_lines()
-        log_text.see(tk.END)
-
-    root.after(0, update_log)  # 한 번만 실행, 함수로 묶어서 깔끔하게!
+# GUI 로그 출력 (맥: Listbox 사용 시 글자 렌더링 이슈 회피)
+def trim_log_listbox():
+    """맥 전용: Listbox 로그 최대 300줄 유지"""
+    try:
+        if not IS_MAC or log_text is None:
+            return
+        MAX_LOG_LINES = 300
+        n = log_text.size()
+        if n > MAX_LOG_LINES:
+            log_text.delete(0, n - MAX_LOG_LINES - 1)
+    except Exception as e:
+        print(f"[ERROR] 로그 정리 중 오류 발생: {e}")
 
 def trim_log_lines():
+    """윈도우 전용: ScrolledText 로그 최대 300줄 유지"""
     try:
-        MAX_LOG_LINES = 1000
+        if IS_MAC:
+            return
+        MAX_LOG_LINES = 300
         total_lines = int(log_text.index('end-1c').split('.')[0])
         if total_lines > MAX_LOG_LINES:
             lines_to_delete = total_lines - MAX_LOG_LINES
             log_text.delete('1.0', f'{lines_to_delete + 1}.0')
     except Exception as e:
         print(f"[ERROR] 로그 정리 중 오류 발생: {e}")
+
+def log_message(msg):
+    if log_text is None or not log_text.winfo_exists():
+        print(f"[WARNING] 로그 기록 실패: {msg}")
+        return
+    def update_log():
+        if IS_MAC:
+            log_text.insert(tk.END, msg)
+            trim_log_listbox()
+            log_text.see(tk.END)
+        else:
+            log_text.insert(tk.END, msg + "\n")
+            trim_log_lines()
+            log_text.see(tk.END)
+    root.after(0, update_log)
 
 def force_kill():
     log_message("⚠ 강제 종료 수행")
@@ -692,9 +537,15 @@ def pause_command():
         log_message("⏸️ 이미 일시정지 상태")
 
 def get_game_window():
-    for window in gw.getWindowsWithTitle(window_title):
-        if window_title in window.title:
-            return window
+    """게임 창 핸들 반환. Windows에서만 pygetwindow 사용, 맥에서는 미지원으로 None."""
+    if not IS_WINDOWS:
+        return None  # pygetwindow.getWindowsWithTitle는 Windows 전용
+    try:
+        for window in gw.getWindowsWithTitle(window_title):
+            if window_title in window.title:
+                return window
+    except Exception:
+        pass
     return None
 
 def focus_game_window():
@@ -735,33 +586,110 @@ def on_w_pressed(_event):
     log_message("수동 W 감지: 1초간 자동동작 일시정지")
 
 
-# 쓰레드 실행
+# GUI: grid로 로그 영역이 항상 공간을 갖도록 (윈도우·맥 공통)
+root = tk.Tk()
+root.title("WorkProcess")
+root.geometry("500x360")
+root.minsize(480, 320)
+root.protocol("WM_DELETE_WINDOW", on_closing)
+root.grid_rowconfigure(3, weight=1, minsize=140)  # 맥에서 로그 영역 최소 높이 보장
+root.grid_columnconfigure(0, weight=1)
+
+# 맥: Text/ScrolledText가 테마 때문에 글자가 안 보이는 경우 방지 (옵션 DB 강제)
+if IS_MAC:
+    root.option_add("*Text.background", "white")
+    root.option_add("*Text.foreground", "black")
+    root.option_add("*Text.font", "Menlo 11")
+    root.option_add("*Text.selectBackground", "#0a84ff")
+    root.option_add("*Text.selectForeground", "white")
+
+status_label = tk.Label(root, text="상태: 실행 중", font=("Arial", 10))
+status_label.grid(row=0, column=0, sticky="ew", padx=6, pady=4)
+
+# 제어 버튼 (맥에서는 키보드 후크 미동작이므로 필수, 윈도우에서도 보조용)
+btn_frame = tk.Frame(root)
+btn_frame.grid(row=1, column=0, sticky="ew", padx=6, pady=4)
+tk.Button(btn_frame, text="재개 (F1)", command=start_command, width=10).pack(side=tk.LEFT, padx=2)
+tk.Button(btn_frame, text="일시정지 (F2)", command=pause_command, width=12).pack(side=tk.LEFT, padx=2)
+tk.Button(btn_frame, text="창 1280x720 (F3)", command=resize_game_window, width=14).pack(side=tk.LEFT, padx=2)
+tk.Button(btn_frame, text="버프 타이머 (F4)", command=start_buff_timer, width=14).pack(side=tk.LEFT, padx=2)
+
+# 설정 프레임 (값만 표시·변경 가능, 로직 연동은 추후)
+settings_frame = tk.LabelFrame(root, text="설정 (기능 연동 예정)", font=("Arial", 9))
+settings_frame.grid(row=2, column=0, sticky="ew", padx=6, pady=4)
+
+row1 = tk.Frame(settings_frame)
+row1.pack(fill=tk.X, padx=4, pady=2)
+tk.Label(row1, text="3층 목표 X:", width=12, anchor="w").pack(side=tk.LEFT)
+var_target_x = tk.IntVar(value=64)
+tk.Spinbox(row1, from_=1, to=999, width=6, textvariable=var_target_x).pack(side=tk.LEFT, padx=2)
+
+row2 = tk.Frame(settings_frame)
+row2.pack(fill=tk.X, padx=4, pady=2)
+tk.Label(row2, text="버프 주기(초):", width=12, anchor="w").pack(side=tk.LEFT)
+var_buff_interval = tk.IntVar(value=90)
+tk.Spinbox(row2, from_=1, to=9999, width=6, textvariable=var_buff_interval).pack(side=tk.LEFT, padx=2)
+
+row3 = tk.Frame(settings_frame)
+row3.pack(fill=tk.X, padx=4, pady=2)
+tk.Label(row3, text="W 수동 일시정지(초):", width=18, anchor="w").pack(side=tk.LEFT)
+var_manual_pause_sec = tk.DoubleVar(value=1.0)
+tk.Entry(row3, width=8, textvariable=var_manual_pause_sec).pack(side=tk.LEFT, padx=2)
+tk.Label(row3, text="(예: 1.0, 2.5)", font=("Arial", 8), fg="gray").pack(side=tk.LEFT)
+
+# 로그: 맥은 Text 렌더링 버그 회피를 위해 Listbox, 윈도우는 ScrolledText
+if IS_MAC:
+    log_frame = tk.Frame(root)
+    log_frame.grid(row=3, column=0, sticky="nsew", padx=6, pady=4)
+    log_frame.grid_rowconfigure(0, weight=1)
+    log_frame.grid_columnconfigure(0, weight=1)
+    log_text = tk.Listbox(
+        log_frame, height=10, width=60,
+        bg="white", fg="black", font=("Menlo", 11),
+        highlightthickness=1, highlightbackground="#ccc",
+        selectbackground="#0a84ff", selectforeground="white",
+    )
+    log_scroll = tk.Scrollbar(log_frame, orient=tk.VERTICAL, command=log_text.yview)
+    log_text.configure(yscrollcommand=log_scroll.set)
+    log_text.grid(row=0, column=0, sticky="nsew")
+    log_scroll.grid(row=0, column=1, sticky="ns")
+    log_text.insert(tk.END, "[INFO] 로그 준비됨.")
+else:
+    log_text = ScrolledText(
+        root, height=10, width=60,
+        bg="white", fg="black", insertbackground="black",
+        font=("Consolas", 10),
+        highlightthickness=1, highlightbackground="#ccc",
+        wrap=tk.WORD,
+    )
+    log_text.grid(row=3, column=0, sticky="nsew", padx=6, pady=4)
+    log_text.insert(tk.END, "[INFO] 로그 준비됨.\n")
+    log_text.see(tk.END)
+
+root.update_idletasks()
+
+# 시작 시 테스트 로그 (텍스트가 “정말로 안 보이는지” 바로 확인용)
+if IS_MAC:
+    root.update()
+
+# GUI 생성 후 스레드 시작
 search_thread = threading.Thread(target=search_player, daemon=True)
 location_thread = threading.Thread(target=location_detector, daemon=True)
 command_thread = threading.Thread(target=command_player, daemon=True)
 monster_thread = threading.Thread(target=monster_detector, daemon=True)
-
 search_thread.start()
 command_thread.start()
 location_thread.start()
 monster_thread.start()
 
-keyboard.add_hotkey("F1", start_command)
-keyboard.add_hotkey("F2", pause_command)
-keyboard.add_hotkey("F3", resize_game_window)
-keyboard.add_hotkey("F4", start_buff_timer)
-keyboard.on_press_key("w", on_w_pressed)
-
-# GUI 설정
-root = tk.Tk()
-root.title("WorkProcess")
-root.geometry("450x190")
-root.protocol("WM_DELETE_WINDOW", on_closing)
-
-status_label = tk.Label(root, text="상태: 실행 중", font=("Arial", 10))
-status_label.pack()
-
-log_text = ScrolledText(root, height=12, width=60)
-log_text.pack()
+# 전역 키 등록 (맥에서는 후크 스레드가 권한 오류로 크래시하므로 등록 생략)
+if IS_WINDOWS:
+    keyboard.add_hotkey("F1", start_command)
+    keyboard.add_hotkey("F2", pause_command)
+    keyboard.add_hotkey("F3", resize_game_window)
+    keyboard.add_hotkey("F4", start_buff_timer)
+    keyboard.on_press_key("w", on_w_pressed)
+else:
+    log_message("[INFO] 맥: F1~F4·W 키보드 후크 미등록 (위 버튼으로 제어)")
 
 root.mainloop()

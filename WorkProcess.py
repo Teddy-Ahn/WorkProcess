@@ -77,6 +77,7 @@ status_coord_var = None
 status_area_var = None
 status_time_var = None
 status_monster_var = None
+status_buff_var = None
 # root = tk.Tk()
 
 # 방향키 상태 변수 (중복 입력 방지)
@@ -239,18 +240,24 @@ def color_match(color1, color2, tolerance=20):
 
 def update_status_display(x, y, area, elapsed, monster):
     """현재 상태를 고정 영역에 표시 (로그 대신 값 업데이트)"""
-    if status_coord_var is None or status_area_var is None or status_time_var is None or status_monster_var is None:
+    if status_coord_var is None or status_area_var is None or status_time_var is None or status_monster_var is None or status_buff_var is None:
         return
     coord_text = f"{x},{y}" if x is not None and y is not None else "-"
     area_text = area if area is not None else "-"
     time_text = f"{elapsed:.1f}초" if elapsed is not None else "-"
     monster_text = "O" if monster else "X"
+    if buff_timer_enabled:
+        remain = max(0, int(BUFF_INTERVAL_SEC - (time.time() - last_buff_time)))
+        buff_text = f"{remain}s"
+    else:
+        buff_text = "-"
 
     def apply():
         status_coord_var.set(coord_text)
         status_area_var.set(area_text)
         status_time_var.set(time_text)
         status_monster_var.set(monster_text)
+        status_buff_var.set(buff_text)
 
     try:
         root.after(0, apply)
@@ -648,11 +655,13 @@ def on_w_pressed(_event):
 # GUI: grid로 로그 영역이 항상 공간을 갖도록 (윈도우·맥 공통)
 root = tk.Tk()
 root.title("WorkProcess")
-root.geometry("420x320")
-root.minsize(400, 300)
+root.geometry("420x248")
+root.minsize(400, 238)
 root.protocol("WM_DELETE_WINDOW", on_closing)
-root.grid_rowconfigure(3, weight=1, minsize=140)  # 맥에서 로그 영역 최소 높이 보장
-root.grid_columnconfigure(0, weight=1)
+root.grid_rowconfigure(3, weight=1, minsize=120)  # 맥에서 로그 영역 최소 높이 보장
+root.grid_columnconfigure(0, weight=1, uniform="col")
+root.grid_columnconfigure(1, weight=1, uniform="col")
+root.grid_columnconfigure(2, weight=1, uniform="col")
 
 # 맥: Text/ScrolledText가 테마 때문에 글자가 안 보이는 경우 방지 (옵션 DB 강제)
 if IS_MAC:
@@ -662,12 +671,9 @@ if IS_MAC:
     root.option_add("*Text.selectBackground", "#0a84ff")
     root.option_add("*Text.selectForeground", "white")
 
-status_label = tk.Label(root, text="상태: 실행 중", font=("Arial", 9))
-status_label.grid(row=0, column=0, sticky="ew", padx=4, pady=2)
-
 # 제어 버튼 (맥에서는 키보드 후크 미동작이므로 필수, 윈도우에서도 보조용)
 btn_frame = tk.Frame(root)
-btn_frame.grid(row=1, column=0, sticky="ew", padx=4, pady=2)
+btn_frame.grid(row=0, column=0, columnspan=3, sticky="ew", padx=4, pady=2)
 btn_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
 btn_resume = tk.Button(btn_frame, text="재개(F1)", command=start_command, width=9)
@@ -682,30 +688,45 @@ btn_buff.grid(row=0, column=3, padx=3, pady=1, sticky="ew")
 
 # 상태 프레임 (현재 위치/시간/몬스터 상태 표시)
 status_frame = tk.LabelFrame(root, text="상태", font=("Arial", 9))
-status_frame.grid(row=2, column=0, sticky="ew", padx=4, pady=2)
+status_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=(4, 2), pady=2)
 status_frame.grid_columnconfigure(1, weight=1)
+status_frame.grid_columnconfigure(3, weight=1)
 
 status_coord_var = tk.StringVar(value="-")
 status_area_var = tk.StringVar(value="-")
 status_time_var = tk.StringVar(value="-")
 status_monster_var = tk.StringVar(value="X")
+status_buff_var = tk.StringVar(value="-")
 
-tk.Label(status_frame, text="좌표:", width=6, anchor="w").grid(row=0, column=0, sticky="w", padx=3, pady=1)
-tk.Label(status_frame, textvariable=status_coord_var, anchor="w").grid(row=0, column=1, sticky="w", padx=3, pady=1)
+tk.Label(status_frame, text="좌표:", width=5, anchor="w").grid(row=0, column=0, sticky="w", padx=2, pady=1)
+tk.Label(status_frame, textvariable=status_coord_var, anchor="w").grid(row=0, column=1, sticky="w", padx=2, pady=1)
+tk.Label(status_frame, text="버프:", width=5, anchor="w").grid(row=0, column=2, sticky="w", padx=2, pady=1)
+tk.Label(status_frame, textvariable=status_buff_var, anchor="w").grid(row=0, column=3, sticky="w", padx=2, pady=1)
 
-tk.Label(status_frame, text="위치:", width=6, anchor="w").grid(row=1, column=0, sticky="w", padx=3, pady=1)
-tk.Label(status_frame, textvariable=status_area_var, anchor="w").grid(row=1, column=1, sticky="w", padx=3, pady=1)
+tk.Label(status_frame, text="위치:", width=5, anchor="w").grid(row=1, column=0, sticky="w", padx=2, pady=1)
+tk.Label(status_frame, textvariable=status_area_var, anchor="w").grid(row=1, column=1, sticky="w", padx=2, pady=1)
+tk.Label(status_frame, text="시간:", width=5, anchor="w").grid(row=1, column=2, sticky="w", padx=2, pady=1)
+tk.Label(status_frame, textvariable=status_time_var, anchor="w").grid(row=1, column=3, sticky="w", padx=2, pady=1)
 
-tk.Label(status_frame, text="머문:", width=6, anchor="w").grid(row=2, column=0, sticky="w", padx=3, pady=1)
-tk.Label(status_frame, textvariable=status_time_var, anchor="w").grid(row=2, column=1, sticky="w", padx=3, pady=1)
+tk.Label(status_frame, text="몬스터:", width=5, anchor="w").grid(row=2, column=0, sticky="w", padx=2, pady=1)
+tk.Label(status_frame, textvariable=status_monster_var, anchor="w").grid(row=2, column=1, sticky="w", padx=2, pady=1)
 
-tk.Label(status_frame, text="몬스터:", width=6, anchor="w").grid(row=3, column=0, sticky="w", padx=3, pady=1)
-tk.Label(status_frame, textvariable=status_monster_var, anchor="w").grid(row=3, column=1, sticky="w", padx=3, pady=1)
+# 경험치 프레임 (추후 연동 예정: 표시만)
+exp_frame = tk.LabelFrame(root, text="경험치", font=("Arial", 9))
+exp_frame.grid(row=1, column=2, sticky="nsew", padx=(2, 4), pady=2)
+exp_frame.grid_columnconfigure(1, weight=1)
+
+tk.Label(exp_frame, text="측정시간:", width=7, anchor="w").grid(row=0, column=0, sticky="w", padx=2, pady=1)
+tk.Label(exp_frame, text="-", anchor="w").grid(row=0, column=1, sticky="w", padx=2, pady=1)
+tk.Label(exp_frame, text="경험치:", width=7, anchor="w").grid(row=1, column=0, sticky="w", padx=2, pady=1)
+tk.Label(exp_frame, text="-", anchor="w").grid(row=1, column=1, sticky="w", padx=2, pady=1)
+tk.Label(exp_frame, text="예상(h):", width=7, anchor="w").grid(row=2, column=0, sticky="w", padx=2, pady=1)
+tk.Label(exp_frame, text="-", anchor="w").grid(row=2, column=1, sticky="w", padx=2, pady=1)
 
 # 로그: 맥은 Text 렌더링 버그 회피를 위해 Listbox, 윈도우는 ScrolledText
 if IS_MAC:
     log_frame = tk.Frame(root)
-    log_frame.grid(row=3, column=0, sticky="nsew", padx=4, pady=2)
+    log_frame.grid(row=2, column=0, columnspan=3, sticky="nsew", padx=4, pady=2)
     log_frame.grid_rowconfigure(0, weight=1)
     log_frame.grid_columnconfigure(0, weight=1)
     log_text = tk.Listbox(
@@ -721,13 +742,13 @@ if IS_MAC:
     log_text.insert(tk.END, "[INFO] 로그 준비됨.")
 else:
     log_text = ScrolledText(
-        root, height=9, width=48,
+        root, height=7, width=48,
         bg="white", fg="black", insertbackground="black",
         font=("Consolas", 9),
         highlightthickness=1, highlightbackground="#ccc",
         wrap=tk.WORD,
     )
-    log_text.grid(row=3, column=0, sticky="nsew", padx=4, pady=2)
+    log_text.grid(row=2, column=0, columnspan=3, sticky="nsew", padx=4, pady=2)
     log_text.insert(tk.END, "[INFO] 로그 준비됨.\n")
     log_text.see(tk.END)
 

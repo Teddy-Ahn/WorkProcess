@@ -69,6 +69,13 @@ step = None
 direction = "left"
 macro_running = True  # 매크로 실행 상태
 log_text = None
+# 미니맵/창 핸들 캐시 (pygetwindow 오버헤드 감소용)
+cached_game_window = None
+
+# 위치 로그 샘플링/중복 방지용 상태
+last_coord_log_time = 0.0
+last_status_log_time = 0.0
+last_status_log_msg = ""
 # root = tk.Tk()
 
 # 방향키 상태 변수 (중복 입력 방지)
@@ -231,26 +238,46 @@ def color_match(color1, color2, tolerance=20):
 
 def location_detector():
     global current_position, last_position, position_start_time, elapsed_time, new_position, monster_detected
+    global last_coord_log_time, last_status_log_time, last_status_log_msg
     grace_period = 1.5  # 🕒 None이 연속으로 나타나도 유지할 최대 시간
     none_start_time = None  # 🕒 None이 최초로 감지된 시간
+
+    # 🔧 자주 쓰는 함수/데이터 로컬 바인딩 (성능 미세 최적화, 동작 동일)
+    time_time = time.time
+    sleep = time.sleep
+    log = log_message
+    area_items = list(AREA_OBJECTS.items())
 
     while not stop_event.is_set():  # 🟢 stop_event가 설정되면 루프 종료
         x, y = player_position  # 서칭된 좌표 가져오기
 
         # 좌표가 None이면 grace_period 내에서는 유지
         if x is None or y is None:
-            if none_start_time is None:  
-                none_start_time = time.time()  # 🕒 None 최초 감지 시간 기록
+            if none_start_time is None:
+                none_start_time = time_time()  # 🕒 None 최초 감지 시간 기록
 
-            elapsed = time.time() - none_start_time
+            elapsed = time_time() - none_start_time
             if elapsed >= grace_period:  # 🕒 grace_period를 넘기면 last_position 초기화
-                log_message("⚠ 위치 확인 불가, 일정 시간 None 유지 → 위치 초기화")
+                # 동일 경고를 너무 자주 찍지 않도록 샘플링
+                msg = "⚠ 위치 확인 불가, 일정 시간 None 유지 → 위치 초기화"
+                now = time_time()
+                if msg != last_status_log_msg or (now - last_status_log_time) >= 0.5:
+                    log(msg)
+                    last_status_log_msg = msg
+                    last_status_log_time = now
                 last_position = None
                 position_start_time = None
             else:
-                log_message(f"⚠ 좌표 확인 불가, {grace_period - elapsed:.1f}초 유지 중...")
+                # 남은 시간 안내 로그도 샘플링 + 중복 방지
+                remaining = grace_period - elapsed
+                msg = f"⚠ 좌표 확인 불가, {remaining:.1f}초 유지 중..."
+                now = time_time()
+                if msg != last_status_log_msg or (now - last_status_log_time) >= 0.5:
+                    log(msg)
+                    last_status_log_msg = msg
+                    last_status_log_time = now
 
-            time.sleep(0.2)
+            sleep(0.2)
             continue  # 다음 루프로 이동
 
         # None이 아닌 좌표가 감지되면 None 타이머 초기화
@@ -258,27 +285,29 @@ def location_detector():
 
         # 현재 좌표가 어느 위치인지 확인
         new_position = None
-        for location, area in AREA_OBJECTS.items():
+        for location, area in area_items:
             if area.x_min <= x <= area.x_max and area.y_min <= y <= area.y_max:
                 new_position = location
                 break
 
         # 머문 시간 계산
-        elapsed_time = time.time() - position_start_time if position_start_time else 0
+        elapsed_time = time_time() - position_start_time if position_start_time else 0
 
-        # 위치가 변경되었을 때만 시간 기록
+        # 위치가 변경되었을 때만 시간 기록 + 변경 로그
         if new_position != last_position:
             if new_position is not None:
-                position_start_time = time.time()  # 새로운 위치에서 시간 초기화        
+                position_start_time = time_time()  # 새로운 위치에서 시간 초기화
                 last_position = new_position
-                log_message(f"🟢 위치 변경: {new_position}")
+                log(f"🟢 위치 변경: {new_position}")
 
-            
-        # 현재 좌표와 머문 시간 출력
-        monster_icon = "O" if monster_detected else "X"
-        log_message(f"Coord:{x},{y} | Area:{new_position} | Time:{elapsed_time:.1f}초 | Monster:{monster_icon}")
+        # 현재 좌표와 머문 시간 출력 (로그는 0.1초가 아니라 최소 0.5초 간격으로만 찍기)
+        now = time_time()
+        if (now - last_coord_log_time) >= 0.5:
+            monster_icon = "O" if monster_detected else "X"
+            log(f"Coord:{x},{y} | Area:{new_position} | Time:{elapsed_time:.1f}초 | Monster:{monster_icon}")
+            last_coord_log_time = now
 
-        time.sleep(0.1)  # 너무 빠르게 체크하지 않도록 조절
+        sleep(0.1)  # 너무 빠르게 체크하지 않도록 조절
 
 def get_floor_name(location: str):
     return location.partition("_")[0] if location else None  # "_" 앞부분만 추출
@@ -295,23 +324,36 @@ def search_player():
     global log_text
     global window_title
     global mini_x, mini_y, mini_w, mini_h
+    global cached_game_window
+
+    # 🔧 자주 쓰는 함수/모듈 로컬 바인딩 (동작 동일, 호출 비용 감소)
+    time_sleep = time.sleep
+    cvt_color = cv2.cvtColor
+    in_range = cv2.inRange
 
     with mss.mss() as sct:
-        while not stop_event.is_set(): # 🟢 stop_event가 설정되면 루프 종료
-            game_window = get_game_window()
+        grab = sct.grab
+        while not stop_event.is_set():  # 🟢 stop_event가 설정되면 루프 종료
+            # 🔧 창 핸들 캐시: 이미 찾은 창이 있으면 그대로 사용, 없을 때만 검색
+            if cached_game_window is None:
+                cached_game_window = get_game_window()
+
+            game_window = cached_game_window
             if not game_window:
                 log_message("게임 창을 찾을 수 없습니다.")
-                time.sleep(0.5)
+                time_sleep(0.5)
+                # 다음 루프에서 다시 검색 시도
+                cached_game_window = None
                 continue
 
             win_x, win_y = game_window.left, game_window.top
             region = {"top": win_y + mini_y, "left": win_x + mini_x, "width": mini_w, "height": mini_h}
-            screenshot = sct.grab(region)
+            screenshot = grab(region)
             img = np.array(screenshot)
-            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)  # BGRA → BGR 변환
+            img = cvt_color(img, cv2.COLOR_BGRA2BGR)  # BGRA → BGR 변환
 
             # mask = cv2.inRange(img, (0, 255, 255), (0, 255, 255))      # 0xFFFF00
-            mask = cv2.inRange(img, (136, 255, 255), (136, 255, 255))  # 0xFFFF88
+            mask = in_range(img, (136, 255, 255), (136, 255, 255))  # 0xFFFF88
             coords = cv2.findNonZero(mask)  # 노란색 픽셀 좌표 찾기
 
             if coords is not None:  # 둘 중 하나라도 탐지되면 즉시 반영
@@ -319,7 +361,7 @@ def search_player():
                 with position_lock:
                     player_position = (x, y)
 
-            time.sleep(0.1)  # 너무 빠르게 실행되지 않도록 제한
+            time_sleep(0.1)  # 너무 빠르게 실행되지 않도록 제한
 
 def steerage(x_min, x_max):
     global player_position, direction
@@ -342,19 +384,23 @@ def command_player():
     global buff_timer_enabled, last_buff_time, manual_pause_until, buff_pending
     global moving_up, moving_down, moving_left, moving_right, direction
 
+    # 🔧 자주 쓰는 함수 로컬 바인딩
+    time_time = time.time
+    sleep = time.sleep
+
     last_face_time = 0
     in_target_range = False
     step = 0
     skill_count = 0
 
     while not stop_event.is_set():
-        if time.time() < manual_pause_until:
+        if time_time() < manual_pause_until:
             cast_ice_strike_not_use()
             release_movement()
-            time.sleep(0.05)
+            sleep(0.05)
             continue
         if pause_event.is_set():
-            time.sleep(0.1)
+            sleep(0.1)
             continue
 
         x, y = player_position
@@ -363,7 +409,7 @@ def command_player():
         if new_position != "floor3":
             release_movement()
             cast_ice_strike_not_use()
-            time.sleep(0.1)
+            sleep(0.1)
             continue
 
         # 3층: x=64로 이동, 왼쪽 바라보기, 사냥·버프
@@ -371,11 +417,11 @@ def command_player():
         eventX = x - target_x
         if abs(eventX) <= 2:
             release_movement()
-            if not in_target_range and time.time() - last_face_time >= 0.5:
+            if not in_target_range and time_time() - last_face_time >= 0.5:
                 keyboard.press("left")
-                time.sleep(random.uniform(0.05, 0.09))
+                sleep(random.uniform(0.05, 0.09))
                 keyboard.release("left")
-                last_face_time = time.time()
+                last_face_time = time_time()
                 log_message("floor3: x=64 도착, 왼쪽 바라봄")
             in_target_range = True
         elif eventX > 2:
@@ -391,43 +437,53 @@ def command_player():
             cast_ice_strike_not_use()
 
         if buff_timer_enabled:
-            if time.time() - last_buff_time >= BUFF_INTERVAL_SEC:
+            if time_time() - last_buff_time >= BUFF_INTERVAL_SEC:
                 buff_pending = True
             if buff_pending and not monster_detected:
                 cast_qe_buff()
-                last_buff_time = time.time()
+                last_buff_time = time_time()
                 buff_pending = False
 
-        time.sleep(0.1)
+        sleep(0.1)
 
 def monster_detector():
     global monster_detected
+    # 🔧 자주 쓰는 함수/모듈 로컬 바인딩 + 상수 캐싱
+    time_sleep = time.sleep
+    cvt_color = cv2.cvtColor
+    in_range = cv2.inRange
+    count_nonzero = np.count_nonzero
+
+    x1, y1, x2, y2 = MONSTER_REGION
+    region_width = max(1, x2 - x1)
+    region_height = max(1, y2 - y1)
+    total_pixels = float(region_width * region_height)
+
     with mss.mss() as sct:
         while not stop_event.is_set():
             game_window = get_game_window()
             if not game_window:
-                time.sleep(0.5)
+                time_sleep(0.5)
                 continue
 
-            x1, y1, x2, y2 = MONSTER_REGION
             region = {
                 "top": game_window.top + y1,
                 "left": game_window.left + x1,
-                "width": max(1, x2 - x1),
-                "height": max(1, y2 - y1)
+                "width": region_width,
+                "height": region_height
             }
             screenshot = sct.grab(region)
             img = np.array(screenshot)
-            bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-            hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-            mask = cv2.inRange(hsv, MONSTER_COLOR_LOWER, MONSTER_COLOR_UPPER)
-            match_pixels = int(np.count_nonzero(mask))
-            match_ratio = float(match_pixels) / (mask.shape[0] * mask.shape[1])
+            bgr = cvt_color(img, cv2.COLOR_BGRA2BGR)
+            hsv = cvt_color(bgr, cv2.COLOR_BGR2HSV)
+            mask = in_range(hsv, MONSTER_COLOR_LOWER, MONSTER_COLOR_UPPER)
+            match_pixels = int(count_nonzero(mask))
+            match_ratio = match_pixels / total_pixels
             found = (match_ratio >= MONSTER_MIN_RATIO) and (match_pixels >= MONSTER_MIN_PIXELS)
 
             monster_detected = found
 
-            time.sleep(0.5)
+            time_sleep(0.5)
 
 # GUI 로그 출력 (맥: Listbox 사용 시 글자 렌더링 이슈 회피)
 def trim_log_listbox():
@@ -463,11 +519,10 @@ def log_message(msg):
         if IS_MAC:
             log_text.insert(tk.END, msg)
             trim_log_listbox()
-            log_text.see(tk.END)
         else:
             log_text.insert(tk.END, msg + "\n")
             trim_log_lines()
-            log_text.see(tk.END)
+        log_text.see(tk.END)
     root.after(0, update_log)
 
 def force_kill():
@@ -491,6 +546,14 @@ def all_clear():
     if use_ice_strike:
         keyboard.release("d")
         use_ice_strike = False
+
+    # 🔧 혹시 남아 있을 수 있는 보조키/모디파이어도 함께 해제 (윈도우 핫키 안정성용)
+    for key in ("shift", "ctrl", "alt", "alt gr", "win", "left windows", "right windows"):
+        try:
+            keyboard.release(key)
+        except Exception:
+            # 해당 키가 실제로 눌려있지 않을 수 있으므로 예외는 무시
+            pass
 
 def on_closing():
     log_message("프로그램 종료 중...")

@@ -395,13 +395,31 @@ def get_exp_region_from_frame(frame):
 def start_exp_preview():
     global exp_preview_running, exp_ocr_running
     global exp_measure_running, exp_start_time, exp_start_value
-    if exp_preview_running:
-        return
-    exp_preview_running = True
-    exp_ocr_running = True
-    exp_measure_running = True
-    exp_start_time = time.time()
-    exp_start_value = None
+    try:
+        # 이미 측정 중이면 리셋 후 재측정(다시 누를 때마다 시작 시점 초기화)
+        exp_preview_running = True
+        exp_ocr_running = True
+        exp_measure_running = True
+        exp_start_time = time.time()
+        exp_start_value = None
+        # 로그는 메인 스레드에서 처리되도록 스케줄만 걸고 즉시 반환 (버튼 반응 유지)
+        if root.winfo_exists():
+            root.after(0, lambda: log_message("📊 경험치 측정 시작 (다시 누르면 리셋)"))
+    except Exception as e:
+        try:
+            root.after(0, lambda: log_message(f"⚠ 측정 시작 오류: {e}"))
+        except Exception:
+            print(f"[ERROR] start_exp_preview: {e}")
+
+def _apply_exp_ui(mm, ss, gained, per_hour):
+    """메인 스레드에서만 호출: 경험치 UI 갱신 (Tk 스레드 안전)"""
+    if exp_time_var is not None:
+        exp_time_var.set(f"{mm:02d}:{ss:02d}")
+    if exp_value_var is not None:
+        exp_value_var.set(f"{gained:,}")
+    if exp_pred_var is not None:
+        exp_pred_var.set(f"{per_hour:,}")
+
 
 def exp_ocr_loop():
     """경험치 영역 OCR (1초 주기)"""
@@ -455,12 +473,11 @@ def exp_ocr_loop():
                     per_hour = int(gained * 3600 / elapsed) if elapsed > 0 else 0
                     mm = elapsed // 60
                     ss = elapsed % 60
-                    if exp_time_var is not None:
-                        exp_time_var.set(f"{mm:02d}:{ss:02d}")
-                    if exp_value_var is not None:
-                        exp_value_var.set(f"{gained:,}")
-                    if exp_pred_var is not None:
-                        exp_pred_var.set(f"{per_hour:,}")
+                    # Tk는 스레드 비안전: 메인 스레드에서만 UI 갱신 (맥에서 버튼 먹통 방지)
+                    try:
+                        root.after(0, lambda mm=mm, ss=ss, g=gained, p=per_hour: _apply_exp_ui(mm, ss, g, p))
+                    except Exception:
+                        pass
         time_sleep(1.0)
 
 # 1. 서칭 로직 (미니맵에서 플레이어 위치 찾기)

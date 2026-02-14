@@ -1,6 +1,5 @@
 import os
 import sys
-# 맥: 시스템 Tk 사용 시 deprecated 경고 억제 (tkinter import 전에 설정)
 os.environ["TK_SILENCE_DEPRECATION"] = "1"
 
 import threading
@@ -21,19 +20,17 @@ try:
 except Exception:
     PIL_AVAILABLE = False
 
-# OS 구분 (맥에서 키보드 후크 등 권한 이슈로 예외 처리할 때 사용)
 IS_MAC = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
 
 if IS_WINDOWS:
     pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
-# 몬스터 색상 범위(HSV). 다크 틸 핵심색 기준
 MONSTER_COLOR_LOWER = (85, 70, 25)
 MONSTER_COLOR_UPPER = (95, 140, 90)
-MONSTER_MIN_RATIO = 0.002  # 전체 픽셀 대비 감지 비율
-MONSTER_MIN_PIXELS = 400   # 최소 감지 픽셀 수
-MONSTER_REGION = (620, 260, 1029, 462)  # (x1, y1, x2, y2) 게임창 기준 좌표
+MONSTER_MIN_RATIO = 0.002
+MONSTER_MIN_PIXELS = 400
+MONSTER_REGION = (620, 260, 1029, 462)
 
 @dataclass
 class Area:
@@ -52,37 +49,32 @@ LOCATION_AREAS = {
 
 }
 
-# 🟢 LOCATION_AREAS를 객체로 변환
 AREA_OBJECTS = {name: Area(**values) for name, values in LOCATION_AREAS.items()}
 
 window_title = "MapleStory Worlds-Mapleland"
-mini_x, mini_y, mini_w, mini_h = 8, 31, 100, 255  # 미니맵 영역
+mini_x, mini_y, mini_w, mini_h = 8, 31, 100, 255
 
-# 전역 변수 (서칭 결과를 저장할 변수)
 stop_event = threading.Event()
 pause_event = threading.Event()
 position_lock = threading.Lock()
-player_position = (None, None)  # (x, y)
+player_position = (None, None)
 current_position = None
 last_position = None
 new_position = None
 elapsed_time = None
-position_start_time = None  # 현재 위치에서 머문 시간 기록
+position_start_time = None
 skill_count = None
 step = None
 
 direction = "left"
-macro_running = True  # 매크로 실행 상태
+macro_running = True
 log_text = None
-# 미니맵/창 핸들 캐시 (pygetwindow 오버헤드 감소용)
 cached_game_window = None
 
-# 전체 화면 캡처 공유 버퍼 (미니맵/몬스터/경험치 등 공용)
 frame_lock = threading.Lock()
-latest_frame = None  # BGRA
+latest_frame = None
 latest_frame_time = 0.0
 
-# 경험치 영역 프리뷰
 exp_preview_running = False
 exp_preview_window = None
 exp_preview_label = None
@@ -97,28 +89,24 @@ exp_time_var = None
 exp_value_var = None
 exp_pred_var = None
 
-# 현재 상태 표시용 변수 (GUI 업데이트)
 status_coord_var = None
 status_area_var = None
 status_time_var = None
 status_monster_var = None
 status_buff_var = None
-# root = tk.Tk()
 
-# 방향키 상태 변수 (중복 입력 방지)
 moving_left = False
 moving_right = False
 moving_up = False
 moving_down = False
 
-# 스킬사용 상태 변수 (중복 입력 방지)
 use_ice_strike = False
 use_thunder_bolt = False
 
 buff = False
 buff_timer_enabled = False
 last_buff_time = 0
-BUFF_INTERVAL_SEC = 90  # F4 기준 90초
+BUFF_INTERVAL_SEC = 90
 buff_pending = False
 manual_pause_until = 0
 monster_detected = None
@@ -128,10 +116,10 @@ def randomSleep():
 
 def press_left():
     global moving_left, moving_right
-    if not moving_left:  # 중복 입력 방지
+    if not moving_left:
         keyboard.press("left")
         moving_left = True
-    if moving_right:  # 오른쪽 이동 중이었다면 중지
+    if moving_right:
         keyboard.release("right")
         moving_right = False
 
@@ -140,7 +128,7 @@ def press_right():
     if not moving_right:
         keyboard.press("right")
         moving_right = True
-    if moving_left:  # 왼쪽 이동 중이었다면 중지
+    if moving_left:
         keyboard.release("left")
         moving_left = False
 
@@ -152,7 +140,7 @@ def press_up():
 
 def press_jump():
     keyboard.press("f")
-    time.sleep(random.uniform(0.05, 0.09))  # 짧은 입력
+    time.sleep(random.uniform(0.05, 0.09))
     keyboard.release("f")
 
 def press_up_teleport():
@@ -165,7 +153,7 @@ def press_up_teleport():
     if moving_up:
         keyboard.release("up")
         moving_up = False
-        time.sleep(random.uniform(0.07, 0.11))  # 짧은 입력
+        time.sleep(random.uniform(0.07, 0.11))
 
 def press_down_jump():
     global moving_down
@@ -180,7 +168,6 @@ def press_down_jump():
         moving_down = False
 
 def release_movement():
-    """이동 키를 모두 해제"""
     global moving_left, moving_right, moving_up
     if moving_left:
         keyboard.release("left") 
@@ -226,7 +213,7 @@ def cast_thunder_bolt():
     keyboard.release("s")
 
 def cast_teleport():
-    if moving_left or moving_right or moving_up:  # 방향키가 눌려있을 때만 실행
+    if moving_left or moving_right or moving_up:
         keyboard.press("shift")
         time.sleep(random.uniform(0.07, 0.11))
         keyboard.release("shift")
@@ -264,7 +251,6 @@ def color_match(color1, color2, tolerance=20):
     return all(abs(c1 - c2) <= tolerance for c1, c2 in zip(color1, color2))
 
 def update_status_display(x, y, area, elapsed, monster):
-    """현재 상태를 고정 영역에 표시 (로그 대신 값 업데이트)"""
     if status_coord_var is None or status_area_var is None or status_time_var is None or status_monster_var is None or status_buff_var is None:
         return
     coord_text = f"{x},{y}" if x is not None and y is not None else "-"
@@ -291,63 +277,56 @@ def update_status_display(x, y, area, elapsed, monster):
 
 def location_detector():
     global current_position, last_position, position_start_time, elapsed_time, new_position, monster_detected
-    grace_period = 1.5  # 🕒 None이 연속으로 나타나도 유지할 최대 시간
-    none_start_time = None  # 🕒 None이 최초로 감지된 시간
+    grace_period = 1.5
+    none_start_time = None
 
-    # 🔧 자주 쓰는 함수/데이터 로컬 바인딩 (성능 미세 최적화, 동작 동일)
     time_time = time.time
     sleep = time.sleep
     area_items = list(AREA_OBJECTS.items())
 
-    while not stop_event.is_set():  # 🟢 stop_event가 설정되면 루프 종료
-        x, y = player_position  # 서칭된 좌표 가져오기
+    while not stop_event.is_set():
+        x, y = player_position
 
-        # 좌표가 None이면 grace_period 내에서는 유지
         if x is None or y is None:
             if none_start_time is None:
-                none_start_time = time_time()  # 🕒 None 최초 감지 시간 기록
+                none_start_time = time_time()
 
             elapsed = time_time() - none_start_time
-            if elapsed >= grace_period:  # 🕒 grace_period를 넘기면 last_position 초기화
+            if elapsed >= grace_period:
                 last_position = None
                 position_start_time = None
             update_status_display(None, None, last_position, 0.0 if position_start_time else None, monster_detected)
             sleep(0.2)
-            continue  # 다음 루프로 이동
+            continue
 
-        # None이 아닌 좌표가 감지되면 None 타이머 초기화
         none_start_time = None
 
-        # 현재 좌표가 어느 위치인지 확인
         new_position = None
         for location, area in area_items:
             if area.x_min <= x <= area.x_max and area.y_min <= y <= area.y_max:
                 new_position = location
                 break
 
-        # 머문 시간 계산
         elapsed_time = time_time() - position_start_time if position_start_time else 0
 
-        # 위치가 변경되었을 때만 시간 기록
         if new_position != last_position:
             if new_position is not None:
-                position_start_time = time_time()  # 새로운 위치에서 시간 초기화
+                position_start_time = time_time()
                 last_position = new_position
         update_status_display(x, y, new_position, elapsed_time, monster_detected)
 
-        sleep(0.1)  # 너무 빠르게 체크하지 않도록 조절
+        sleep(0.1)
 
 def get_floor_name(location: str):
-    return location.partition("_")[0] if location else None  # "_" 앞부분만 추출
+    return location.partition("_")[0] if location else None
 
 def detect_location(x, y):
-    for location, area in AREA_OBJECTS.items():  # AREA_OBJECTS를 사용
+    for location, area in AREA_OBJECTS.items():
         if area.x_min <= x <= area.x_max and area.y_min <= y <= area.y_max:
             return location
-    return None  # 범위에 없는 경우
+    return None
 
 def capture_loop():
-    """게임 화면 전체를 1회 캡처하여 공유"""
     global latest_frame, latest_frame_time, cached_game_window
     time_sleep = time.sleep
     time_time = time.time
@@ -369,14 +348,13 @@ def capture_loop():
                 continue
             region = {"top": win_y, "left": win_x, "width": win_w, "height": win_h}
             screenshot = grab(region)
-            img = np.array(screenshot)  # BGRA
+            img = np.array(screenshot)
             with frame_lock:
                 latest_frame = img
                 latest_frame_time = time_time()
             time_sleep(0.1)
 
 def get_exp_region_from_frame(frame):
-    """하단 10% 영역을 5등분해 3번째만 반환 (상단 절반만 사용)"""
     h, w = frame.shape[:2]
     y1 = int(h * 0.9)
     y2 = h
@@ -386,43 +364,22 @@ def get_exp_region_from_frame(frame):
     if roi.size == 0:
         return roi
     rh = roi.shape[0]
-    # 상단 절반 중 약간 아래로 내린 구간만 사용
-    # 전체 높이 기준으로 93%~96% 구간
-    top = int(rh * 0.30)   # 91% -> 93%로 올리는 효과
+    top = int(rh * 0.30)
     bottom = int(rh * 0.60)
     return roi[top:bottom, :]
 
 def start_exp_preview():
     global exp_preview_running, exp_ocr_running
     global exp_measure_running, exp_start_time, exp_start_value
-    try:
-        # 이미 측정 중이면 리셋 후 재측정(다시 누를 때마다 시작 시점 초기화)
-        exp_preview_running = True
-        exp_ocr_running = True
-        exp_measure_running = True
-        exp_start_time = time.time()
-        exp_start_value = None
-        # 로그는 메인 스레드에서 처리되도록 스케줄만 걸고 즉시 반환 (버튼 반응 유지)
-        if root.winfo_exists():
-            root.after(0, lambda: log_message("📊 경험치 측정 시작 (다시 누르면 리셋)"))
-    except Exception as e:
-        try:
-            root.after(0, lambda: log_message(f"⚠ 측정 시작 오류: {e}"))
-        except Exception:
-            print(f"[ERROR] start_exp_preview: {e}")
-
-def _apply_exp_ui(mm, ss, gained, per_hour):
-    """메인 스레드에서만 호출: 경험치 UI 갱신 (Tk 스레드 안전)"""
-    if exp_time_var is not None:
-        exp_time_var.set(f"{mm:02d}:{ss:02d}")
-    if exp_value_var is not None:
-        exp_value_var.set(f"{gained:,}")
-    if exp_pred_var is not None:
-        exp_pred_var.set(f"{per_hour:,}")
-
+    if exp_preview_running:
+        return
+    exp_preview_running = True
+    exp_ocr_running = True
+    exp_measure_running = True
+    exp_start_time = time.time()
+    exp_start_value = None
 
 def exp_ocr_loop():
-    """경험치 영역 OCR (1초 주기)"""
     global last_exp_log_time, last_exp_value
     global exp_measure_running, exp_start_time, exp_start_value
     time_sleep = time.sleep
@@ -440,20 +397,16 @@ def exp_ocr_loop():
         if roi is None or roi.size == 0:
             time_sleep(0.2)
             continue
-        # OCR 전처리
         roi = cv2.resize(roi, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LINEAR)
         roi = cv2.cvtColor(roi, cv2.COLOR_BGRA2GRAY)
         _, roi = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         text = pytesseract.image_to_string(roi, config="--psm 7")
-        # [] 사이 제거 후 숫자만 추출
         text = text.replace("EXP", "").replace("exp", "").strip()
-        # 괄호/대괄호 뒤에 붙는 진행률 제거
         for sep in ("[", "(", " {", "{"):
             if sep in text:
                 text = text.split(sep)[0].strip()
                 break
         digits = "".join(ch for ch in text if ch.isdigit() or ch == ",")
-        # 쉼표 제거
         digits = digits.replace(",", "")
         if digits:
             try:
@@ -473,14 +426,14 @@ def exp_ocr_loop():
                     per_hour = int(gained * 3600 / elapsed) if elapsed > 0 else 0
                     mm = elapsed // 60
                     ss = elapsed % 60
-                    # Tk는 스레드 비안전: 메인 스레드에서만 UI 갱신 (맥에서 버튼 먹통 방지)
-                    try:
-                        root.after(0, lambda mm=mm, ss=ss, g=gained, p=per_hour: _apply_exp_ui(mm, ss, g, p))
-                    except Exception:
-                        pass
+                    if exp_time_var is not None:
+                        exp_time_var.set(f"{mm:02d}:{ss:02d}")
+                    if exp_value_var is not None:
+                        exp_value_var.set(f"{gained:,}")
+                    if exp_pred_var is not None:
+                        exp_pred_var.set(f"{per_hour:,}")
         time_sleep(1.0)
 
-# 1. 서칭 로직 (미니맵에서 플레이어 위치 찾기)
 def search_player():
     global player_position
     global log_text
@@ -488,18 +441,16 @@ def search_player():
     global mini_x, mini_y, mini_w, mini_h
     global cached_game_window
 
-    # 🔧 자주 쓰는 함수/모듈 로컬 바인딩 (동작 동일, 호출 비용 감소)
     time_sleep = time.sleep
     cvt_color = cv2.cvtColor
     in_range = cv2.inRange
 
-    while not stop_event.is_set():  # 🟢 stop_event가 설정되면 루프 종료
+    while not stop_event.is_set():
         with frame_lock:
             frame = latest_frame
         if frame is None:
             time_sleep(0.05)
             continue
-        # 미니맵 영역 자르기 (게임창 기준 좌표)
         y1 = mini_y
         y2 = mini_y + mini_h
         x1 = mini_x
@@ -508,18 +459,17 @@ def search_player():
             time_sleep(0.05)
             continue
         img = frame[y1:y2, x1:x2]
-        img = cvt_color(img, cv2.COLOR_BGRA2BGR)  # BGRA → BGR 변환
+        img = cvt_color(img, cv2.COLOR_BGRA2BGR)
 
-        # mask = cv2.inRange(img, (0, 255, 255), (0, 255, 255))      # 0xFFFF00
-        mask = in_range(img, (136, 255, 255), (136, 255, 255))  # 0xFFFF88
-        coords = cv2.findNonZero(mask)  # 노란색 픽셀 좌표 찾기
+        mask = in_range(img, (136, 255, 255), (136, 255, 255))
+        coords = cv2.findNonZero(mask)
 
-        if coords is not None:  # 둘 중 하나라도 탐지되면 즉시 반영
-            x, y = coords[0][0]  # 첫 번째 검출된 좌표 사용
+        if coords is not None:
+            x, y = coords[0][0]
             with position_lock:
                 player_position = (x, y)
 
-        time_sleep(0.1)  # 너무 빠르게 실행되지 않도록 제한
+        time_sleep(0.1)
 
 def steerage(x_min, x_max):
     global player_position, direction
@@ -529,20 +479,18 @@ def steerage(x_min, x_max):
         if x > x_min:
             press_left()
         else:
-            direction = "right"  # 🔄 방향 전환
+            direction = "right"
     elif direction == "right":
         if x < x_max:
             press_right()
         else:
-            direction = "left"  # 🔄 방향 전환
+            direction = "left"
 
-# 2. 커맨더 로직 (플레이어 위치에 따라 방향키 입력) — 3층(floor3)에서만 동작
 def command_player():
     global new_position, elapsed_time, player_position, skill_count, buff, step, monster_detected
     global buff_timer_enabled, last_buff_time, manual_pause_until, buff_pending
     global moving_up, moving_down, moving_left, moving_right, direction
 
-    # 🔧 자주 쓰는 함수 로컬 바인딩
     time_time = time.time
     sleep = time.sleep
 
@@ -563,14 +511,12 @@ def command_player():
 
         x, y = player_position
 
-        # 3층(floor3) 외에는 키만 풀고 동작 없음
         if new_position != "floor3":
             release_movement()
             cast_ice_strike_not_use()
             sleep(0.1)
             continue
 
-        # 3층: x=64로 이동, 왼쪽 바라보기, 사냥·버프
         target_x = 64
         eventX = x - target_x
         if abs(eventX) <= 2:
@@ -606,7 +552,6 @@ def command_player():
 
 def monster_detector():
     global monster_detected
-    # 🔧 자주 쓰는 함수/모듈 로컬 바인딩 + 상수 캐싱
     time_sleep = time.sleep
     cvt_color = cv2.cvtColor
     in_range = cv2.inRange
@@ -638,9 +583,7 @@ def monster_detector():
 
         time_sleep(0.3)
 
-# GUI 로그 출력 (맥: Listbox 사용 시 글자 렌더링 이슈 회피)
 def trim_log_listbox():
-    """맥 전용: Listbox 로그 최대 300줄 유지"""
     try:
         if not IS_MAC or log_text is None:
             return
@@ -652,7 +595,6 @@ def trim_log_listbox():
         print(f"[ERROR] 로그 정리 중 오류 발생: {e}")
 
 def trim_log_lines():
-    """윈도우 전용: ScrolledText 로그 최대 300줄 유지"""
     try:
         if IS_MAC:
             return
@@ -680,7 +622,7 @@ def log_message(msg):
 
 def force_kill():
     log_message("⚠ 강제 종료 수행")
-    os._exit(1)  # 🛑 강제 종료 (GUI 응답 없음 방지)
+    os._exit(1)
 
 def all_clear():
     global moving_down, moving_up, moving_right, moving_left, use_ice_strike
@@ -700,17 +642,15 @@ def all_clear():
         keyboard.release("d")
         use_ice_strike = False
 
-    # 🔧 혹시 남아 있을 수 있는 보조키/모디파이어도 함께 해제 (윈도우 핫키 안정성용)
     for key in ("shift", "ctrl", "alt", "alt gr", "win", "left windows", "right windows"):
         try:
             keyboard.release(key)
         except Exception:
-            # 해당 키가 실제로 눌려있지 않을 수 있으므로 예외는 무시
             pass
 
 def on_closing():
     log_message("프로그램 종료 중...")
-    stop_event.set()  # 🔴 스레드 종료 신호 보내기
+    stop_event.set()
     global exp_preview_running, exp_preview_window
     exp_preview_running = False
     global exp_ocr_running
@@ -723,9 +663,8 @@ def on_closing():
         except Exception:
             pass
 
-    timeout = 3  # ⏳ 최대 대기 시간 (초)
+    timeout = 3
 
-    # 종료될 때 눌린 키를 모두 해제함
     all_clear()
 
     for thread, name in [(capture_thread, "capture_thread"),
@@ -735,20 +674,20 @@ def on_closing():
                           (monster_thread, "monster_thread")]:
         if thread and thread.is_alive():
             log_message(f"🔴 {name} 종료 대기 (최대 {timeout}초)...")
-            thread.join(timeout)  # ⏳ 최대 대기 시간 후 강제 종료 체크
+            thread.join(timeout)
             if thread.is_alive():
                 log_message(f"❌ {name} 종료 실패! 강제 종료 실행.")
                 force_kill()
 
     log_message("✅ 모든 스레드 종료 완료, 프로그램 종료")
-    root.destroy()  # 🔴 GUI 종료
+    root.destroy()
 
 
 def start_command():
     global pause_event
     if pause_event.is_set():
         all_clear()
-        pause_event.clear()  # 재개
+        pause_event.clear()
         focus_game_window()
         log_message("▶️ 자동 움직임 재개")
     else:
@@ -758,16 +697,15 @@ def pause_command():
     global pause_event
     if not pause_event.is_set():
         all_clear()
-        pause_event.set()  # 정지
+        pause_event.set()
         log_message("⏸️ 자동 움직임 일시정지")
     else:
         all_clear()
         log_message("⏸️ 이미 일시정지 상태")
 
 def get_game_window():
-    """게임 창 핸들 반환. Windows에서만 pygetwindow 사용, 맥에서는 미지원으로 None."""
     if not IS_WINDOWS:
-        return None  # pygetwindow.getWindowsWithTitle는 Windows 전용
+        return None
     try:
         for window in gw.getWindowsWithTitle(window_title):
             if window_title in window.title:
@@ -814,18 +752,16 @@ def on_w_pressed(_event):
     log_message("수동 W 감지: 1초간 자동동작 일시정지")
 
 
-# GUI: grid로 로그 영역이 항상 공간을 갖도록 (윈도우·맥 공통)
 root = tk.Tk()
 root.title("WorkProcess")
 root.geometry("420x248")
 root.minsize(400, 238)
 root.protocol("WM_DELETE_WINDOW", on_closing)
-root.grid_rowconfigure(3, weight=1, minsize=120)  # 맥에서 로그 영역 최소 높이 보장
+root.grid_rowconfigure(3, weight=1, minsize=120)
 root.grid_columnconfigure(0, weight=1, uniform="col")
 root.grid_columnconfigure(1, weight=1, uniform="col")
 root.grid_columnconfigure(2, weight=1, uniform="col")
 
-# 맥: Text/ScrolledText가 테마 때문에 글자가 안 보이는 경우 방지 (옵션 DB 강제)
 if IS_MAC:
     root.option_add("*Text.background", "white")
     root.option_add("*Text.foreground", "black")
@@ -833,7 +769,6 @@ if IS_MAC:
     root.option_add("*Text.selectBackground", "#0a84ff")
     root.option_add("*Text.selectForeground", "white")
 
-# 제어 버튼 (맥에서는 키보드 후크 미동작이므로 필수, 윈도우에서도 보조용)
 btn_frame = tk.Frame(root)
 btn_frame.grid(row=0, column=0, columnspan=3, sticky="ew", padx=4, pady=2)
 btn_frame.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
@@ -850,7 +785,6 @@ btn_resize.grid(row=0, column=2, padx=2, pady=1, sticky="ew")
 btn_buff.grid(row=0, column=3, padx=2, pady=1, sticky="ew")
 btn_measure.grid(row=0, column=4, padx=2, pady=1, sticky="ew")
 
-# 상태 프레임 (현재 위치/시간/몬스터 상태 표시)
 status_frame = tk.LabelFrame(root, text="상태", font=("Arial", 9))
 status_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=4, pady=2)
 status_frame.grid_columnconfigure(1, weight=1)
@@ -878,7 +812,6 @@ tk.Label(status_frame, textvariable=status_time_var, anchor="w").grid(row=1, col
 tk.Label(status_frame, text="몬스터:", width=5, anchor="w").grid(row=2, column=0, sticky="w", padx=2, pady=1)
 tk.Label(status_frame, textvariable=status_monster_var, anchor="w").grid(row=2, column=1, sticky="w", padx=2, pady=1)
 
-# 경험치 프레임 (추후 연동 예정: 표시만)
 exp_frame = tk.LabelFrame(root, text="경험치", font=("Arial", 9))
 exp_frame.grid(row=1, column=2, sticky="nsew", padx=4, pady=2)
 exp_frame.grid_columnconfigure(1, weight=1)
@@ -890,7 +823,6 @@ tk.Label(exp_frame, textvariable=exp_value_var, anchor="w").grid(row=1, column=1
 tk.Label(exp_frame, text="예상(h):", width=7, anchor="w").grid(row=2, column=0, sticky="w", padx=2, pady=1)
 tk.Label(exp_frame, textvariable=exp_pred_var, anchor="w").grid(row=2, column=1, sticky="w", padx=2, pady=1)
 
-# 로그: 맥은 Text 렌더링 버그 회피를 위해 Listbox, 윈도우는 ScrolledText
 if IS_MAC:
     log_frame = tk.Frame(root)
     log_frame.grid(row=2, column=0, columnspan=3, sticky="nsew", padx=4, pady=2)
@@ -921,15 +853,12 @@ else:
 
 root.update_idletasks()
 
-# 시작 시 테스트 로그 (텍스트가 “정말로 안 보이는지” 바로 확인용)
 if IS_MAC:
     root.update()
 
-# 시작 시 자동 움직임 OFF
 pause_event.set()
 log_message("⏸️ 자동 움직임 시작 상태: OFF")
 
-# GUI 생성 후 스레드 시작
 capture_thread = threading.Thread(target=capture_loop, daemon=True)
 search_thread = threading.Thread(target=search_player, daemon=True)
 location_thread = threading.Thread(target=location_detector, daemon=True)
@@ -943,7 +872,6 @@ location_thread.start()
 monster_thread.start()
 exp_thread.start()
 
-# 전역 키 등록 (맥에서는 후크 스레드가 권한 오류로 크래시하므로 등록 생략)
 if IS_WINDOWS:
     keyboard.add_hotkey("F1", start_command)
     keyboard.add_hotkey("F2", pause_command)

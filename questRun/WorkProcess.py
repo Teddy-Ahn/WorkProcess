@@ -53,6 +53,136 @@ AREA_OBJECTS = {name: Area(**values) for name, values in LOCATION_AREAS.items()}
 
 window_title = "MapleStory Worlds-Mapleland"
 mini_x, mini_y, mini_w, mini_h = 8, 31, 100, 255
+MINIMAP_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "minimap_region.txt")
+
+# 미니맵 영역은 이 해상도 기준으로 저장·사용 (영역 지정 시 자동으로 이 크기로 맞춤)
+MINIMAP_RESOLUTION = (1280, 720)
+
+
+def load_minimap_region():
+    """minimap_region.txt에서 x,y,w,h 로드 (있으면)."""
+    global mini_x, mini_y, mini_w, mini_h
+    if not os.path.isfile(MINIMAP_CONFIG_PATH):
+        return
+    try:
+        with open(MINIMAP_CONFIG_PATH, "r", encoding="utf-8") as f:
+            line = f.read().strip()
+        parts = line.split()
+        if len(parts) >= 4:
+            mini_x = int(parts[0])
+            mini_y = int(parts[1])
+            mini_w = int(parts[2])
+            mini_h = int(parts[3])
+    except Exception:
+        pass
+
+
+def save_minimap_region():
+    """현재 mini_x,y,w,h를 minimap_region.txt에 저장."""
+    try:
+        with open(MINIMAP_CONFIG_PATH, "w", encoding="utf-8") as f:
+            f.write(f"{mini_x} {mini_y} {mini_w} {mini_h}\n")
+    except Exception:
+        pass
+
+
+def start_minimap_region_selector():
+    """
+    1. 게임 창을 1280x720으로 변경
+    2. 캡처 화면을 열고 드래그로 미니맵 영역 지정
+    3. 지정한 영역을 mini_x, mini_y, mini_w, mini_h에 반영하고 minimap_region.txt에 저장 (1280x720 기준)
+    """
+    global mini_x, mini_y, mini_w, mini_h
+    win = get_game_window()
+    if not win:
+        log_message("게임 창을 찾을 수 없습니다. (윈도우/맥 공통)")
+        return
+    log_message("해상도 1280x720으로 변경 중...")
+    resize_game_window()
+    time.sleep(0.8)
+    win = get_game_window()
+    if not win:
+        log_message("게임 창을 다시 찾지 못했습니다.")
+        return
+    try:
+        left, top = win.left, win.top
+        w, h = win.width, win.height
+    except Exception as e:
+        log_message(f"창 좌표 조회 실패: {e}")
+        return
+    if w != MINIMAP_RESOLUTION[0] or h != MINIMAP_RESOLUTION[1]:
+        log_message(f"해상도가 {w}x{h}입니다. 1280x720이 아니면 영역이 어긋날 수 있습니다.")
+    with mss.mss() as sct:
+        region = {"left": left, "top": top, "width": w, "height": h}
+        shot = sct.grab(region)
+        img_bgra = np.array(shot)
+    if img_bgra.size == 0:
+        log_message("캡처 실패.")
+        return
+    scale = 1.0
+    if w > 960:
+        scale = 960 / w
+    disp_w = int(w * scale)
+    disp_h = int(h * scale)
+    img_rgb = cv2.cvtColor(img_bgra, cv2.COLOR_BGRA2RGB)
+    if scale != 1.0:
+        img_disp = cv2.resize(img_rgb, (disp_w, disp_h), interpolation=cv2.INTER_AREA)
+    else:
+        img_disp = img_rgb
+    if PIL_AVAILABLE:
+        from PIL import Image
+        photo = ImageTk.PhotoImage(Image.fromarray(img_disp))
+    else:
+        import tempfile
+        tmp = os.path.join(tempfile.gettempdir(), "eastcanyon_minimap_capture.png")
+        cv2.imwrite(tmp, cv2.cvtColor(img_disp, cv2.COLOR_RGB2BGR))
+        photo = tk.PhotoImage(file=tmp)
+    start_x, start_y = None, None
+    rect_id = None
+
+    topwin = tk.Toplevel(root)
+    topwin.title("미니맵 영역 지정 (1280x720) — 드래그로 영역 선택 후 놓기")
+    topwin.geometry(f"{disp_w + 4}x{disp_h + 4}")
+    canvas = tk.Canvas(topwin, width=disp_w, height=disp_h, cursor="cross")
+    canvas.pack()
+    canvas.create_image(0, 0, anchor=tk.NW, image=photo)
+    topwin.image = photo
+
+    def on_press(e):
+        nonlocal start_x, start_y, rect_id
+        start_x, start_y = e.x, e.y
+        if rect_id is not None:
+            canvas.delete(rect_id)
+        rect_id = canvas.create_rectangle(e.x, e.y, e.x, e.y, outline="lime", width=2)
+
+    def on_drag(e):
+        nonlocal rect_id
+        if rect_id is not None and start_x is not None:
+            canvas.delete(rect_id)
+            rect_id = canvas.create_rectangle(start_x, start_y, e.x, e.y, outline="lime", width=2)
+
+    def on_release(e):
+        nonlocal rect_id, start_x, start_y
+        global mini_x, mini_y, mini_w, mini_h
+        if start_x is None:
+            return
+        ex, ey = e.x, e.y
+        x1, x2 = min(start_x, ex), max(start_x, ex)
+        y1, y2 = min(start_y, ey), max(start_y, ey)
+        if x2 - x1 < 5 or y2 - y1 < 5:
+            log_message("영역이 너무 작습니다. 다시 드래그해 주세요.")
+            return
+        mini_x = int(x1 / scale)
+        mini_y = int(y1 / scale)
+        mini_w = max(1, int((x2 - x1) / scale))
+        mini_h = max(1, int((y2 - y1) / scale))
+        save_minimap_region()
+        log_message(f"미니맵 영역 설정(1280x720 기준): x={mini_x} y={mini_y} w={mini_w} h={mini_h}")
+        topwin.destroy()
+
+    canvas.bind("<ButtonPress-1>", on_press)
+    canvas.bind("<B1-Motion>", on_drag)
+    canvas.bind("<ButtonRelease-1>", on_release)
 
 stop_event = threading.Event()
 pause_event = threading.Event()
@@ -487,17 +617,21 @@ def steerage(x_min, x_max):
             direction = "left"
 
 def command_player():
-    global new_position, elapsed_time, player_position, skill_count, buff, step, monster_detected
+    global new_position, elapsed_time, player_position, skill_count, buff, step
     global buff_timer_enabled, last_buff_time, manual_pause_until, buff_pending
     global moving_up, moving_down, moving_left, moving_right, direction
 
     time_time = time.time
     sleep = time.sleep
 
-    last_face_time = 0
-    in_target_range = False
     step = 0
     skill_count = 0
+    next_switch_time = 0.0
+    next_skill_tap_time = 0.0
+    force_turn_until = 0.0
+    PRE_SWITCH_STOP_SKILL_SEC = 0.5
+    FORCE_TURN_HOLD_SEC_NORMAL = 0.25
+    # 몬스터 감지는 명령 로직에서 제외 (항상 몹이 있다고 가정)
 
     while not stop_event.is_set():
         if time_time() < manual_pause_until:
@@ -511,39 +645,60 @@ def command_player():
 
         x, y = player_position
 
-        if new_position != "floor3":
+        if x is None:
             release_movement()
             cast_ice_strike_not_use()
             sleep(0.1)
             continue
 
-        target_x = 64
-        eventX = x - target_x
-        if abs(eventX) <= 2:
-            release_movement()
-            if not in_target_range and time_time() - last_face_time >= 0.5:
-                keyboard.press("left")
-                sleep(random.uniform(0.05, 0.09))
-                keyboard.release("left")
-                last_face_time = time_time()
-                log_message("floor3: x=64 도착, 왼쪽 바라봄")
-            in_target_range = True
-        elif eventX > 2:
-            in_target_range = False
-            press_left()
-        else:
-            in_target_range = False
-            press_right()
+        # 미니맵 x좌표를 3등분해서 "가운데(중앙) 범위" 유지
+        center_left = int(mini_w / 3)
+        center_right = int(mini_w * 2 / 3)
+        now = time_time()
 
-        if monster_detected and eventX >= -2:
-            cast_ice_strike_use()
-        else:
+        in_center = center_left <= x <= center_right
+
+        if not in_center:
+            # 중앙 범위를 벗어나면 중앙으로 복귀: 방향키는 누르고 있는 동안
+            # 스킬은 약 1.5초에 한 번만 "딸깍"(탭) 사용
             cast_ice_strike_not_use()
+            if x < center_left:
+                press_right()
+            else:
+                press_left()
+
+            if now >= next_skill_tap_time:
+                cast_ice_strike()
+                next_skill_tap_time = now + 1.5
+        else:
+            # 중앙 범위에 있으면: 좌/우 2~8초 랜덤으로 번갈아 이동하며 스킬은 지속 사용(홀드)
+            next_skill_tap_time = 0.0
+            # 방향 전환 직전(0.5초 전)에는 스킬 홀드를 미리 끊어서 전환을 안정화
+            if next_switch_time > now and (next_switch_time - now) <= PRE_SWITCH_STOP_SKILL_SEC:
+                cast_ice_strike_not_use()
+
+            if now >= next_switch_time:
+                direction = "right" if direction == "left" else "left"
+                next_switch_time = now + random.uniform(2.0, 8.0)
+                force_turn_until = now + FORCE_TURN_HOLD_SEC_NORMAL
+                log_message(f"방향 전환 → {direction} (다음 전환까지 {max(0.0, next_switch_time - now):.1f}초)")
+
+            if direction == "left":
+                press_left()
+            else:
+                press_right()
+
+            # 몬스터 피격 등으로 방향 전환이 씹히는 경우가 있어,
+            # 전환 직후에는 일정 시간(기본 0.8초) 스킬 없이 방향키를 더 오래 밀어줌
+            if now < force_turn_until:
+                cast_ice_strike_not_use()
+            else:
+                cast_ice_strike_use()
 
         if buff_timer_enabled:
             if time_time() - last_buff_time >= BUFF_INTERVAL_SEC:
                 buff_pending = True
-            if buff_pending and not monster_detected:
+            if buff_pending:
                 cast_qe_buff()
                 last_buff_time = time_time()
                 buff_pending = False
@@ -771,19 +926,21 @@ if IS_MAC:
 
 btn_frame = tk.Frame(root)
 btn_frame.grid(row=0, column=0, columnspan=3, sticky="ew", padx=4, pady=2)
-btn_frame.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
+btn_frame.grid_columnconfigure((0, 1, 2, 3, 4, 5), weight=1)
 
-btn_resume = tk.Button(btn_frame, text="재개(F1)", command=start_command, width=8)
-btn_pause = tk.Button(btn_frame, text="일시정지(F2)", command=pause_command, width=9)
-btn_resize = tk.Button(btn_frame, text="1280x720(F3)", command=resize_game_window, width=10)
-btn_buff = tk.Button(btn_frame, text="버프(F4)", command=start_buff_timer, width=8)
-btn_measure = tk.Button(btn_frame, text="측정 시작", command=start_exp_preview, width=8)
+btn_start = tk.Button(btn_frame, text="F1 시작", command=start_command, width=8)
+btn_stop = tk.Button(btn_frame, text="F2 정지", command=pause_command, width=8)
+btn_resize = tk.Button(btn_frame, text="F3 조정", command=resize_game_window, width=8)
+btn_buff = tk.Button(btn_frame, text="F4 버프", command=start_buff_timer, width=8)
+btn_minimap = tk.Button(btn_frame, text="F5 미니맵", command=start_minimap_region_selector, width=8)
+btn_exp = tk.Button(btn_frame, text="경험치", command=start_exp_preview, width=8)
 
-btn_resume.grid(row=0, column=0, padx=2, pady=1, sticky="ew")
-btn_pause.grid(row=0, column=1, padx=2, pady=1, sticky="ew")
+btn_start.grid(row=0, column=0, padx=2, pady=1, sticky="ew")
+btn_stop.grid(row=0, column=1, padx=2, pady=1, sticky="ew")
 btn_resize.grid(row=0, column=2, padx=2, pady=1, sticky="ew")
 btn_buff.grid(row=0, column=3, padx=2, pady=1, sticky="ew")
-btn_measure.grid(row=0, column=4, padx=2, pady=1, sticky="ew")
+btn_minimap.grid(row=0, column=4, padx=2, pady=1, sticky="ew")
+btn_exp.grid(row=0, column=5, padx=2, pady=1, sticky="ew")
 
 status_frame = tk.LabelFrame(root, text="상태", font=("Arial", 9))
 status_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=4, pady=2)
@@ -856,6 +1013,8 @@ root.update_idletasks()
 if IS_MAC:
     root.update()
 
+load_minimap_region()
+
 pause_event.set()
 log_message("⏸️ 자동 움직임 시작 상태: OFF")
 
@@ -877,6 +1036,7 @@ if IS_WINDOWS:
     keyboard.add_hotkey("F2", pause_command)
     keyboard.add_hotkey("F3", resize_game_window)
     keyboard.add_hotkey("F4", start_buff_timer)
+    keyboard.add_hotkey("F5", start_minimap_region_selector)
     keyboard.on_press_key("w", on_w_pressed)
 else:
     log_message("[INFO] 맥: F1~F4·W 키보드 후크 미등록 (위 버튼으로 제어)")

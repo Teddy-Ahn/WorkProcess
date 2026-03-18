@@ -39,18 +39,6 @@ class Area:
     y_min: int
     y_max: int
 
-LOCATION_AREAS = { 
-    "floor3": {"x_min": 52, "x_max": 72, "y_min": 101, "y_max": 104},
-    "floor3_1": {"x_min": 36, "x_max": 72, "y_min": 98, "y_max": 100},
-    "floor3_2": {"x_min": 39, "x_max": 72, "y_min": 93, "y_max": 97},
-    "floor3_3": {"x_min": 64, "x_max": 72, "y_min": 75, "y_max": 92},
-    "iso_point": {"x_min": 25, "x_max": 36, "y_min": 107, "y_max": 107},
-    "right_roof": {"x_min": 68, "x_max": 68, "y_min": 76, "y_max": 91}
-
-}
-
-AREA_OBJECTS = {name: Area(**values) for name, values in LOCATION_AREAS.items()}
-
 window_title = "MapleStory Worlds-Mapleland"
 mini_x, mini_y, mini_w, mini_h = 8, 31, 100, 255
 MINIMAP_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "minimap_region.txt")
@@ -224,6 +212,10 @@ status_area_var = None
 status_time_var = None
 status_monster_var = None
 status_buff_var = None
+
+# 경험치 OCR 스레드는 버튼을 누를 때만 실제로 start() 합니다.
+exp_thread = None
+exp_thread_started = False
 
 moving_left = False
 moving_right = False
@@ -508,6 +500,12 @@ def start_exp_preview():
     exp_measure_running = True
     exp_start_time = time.time()
     exp_start_value = None
+
+    # 경험치 OCR 스레드는 버튼을 누를 때만 시작
+    global exp_thread_started, exp_thread
+    if exp_thread is not None and not exp_thread_started:
+        exp_thread.start()
+        exp_thread_started = True
 
 def exp_ocr_loop():
     global last_exp_log_time, last_exp_value
@@ -1144,8 +1142,12 @@ capture_thread.start()
 search_thread.start()
 command_thread.start()
 location_thread.start()
-monster_thread.start()
-exp_thread.start()
+# 현재는 monster_detector 리소스가 불필요하다고 판단되어 실행을 비활성화합니다.
+# (나중에 monster_detector를 다시 쓰려면 아래 플래그를 true로 변경)
+ENABLE_MONSTER_DETECTOR = False
+if ENABLE_MONSTER_DETECTOR:
+    monster_thread.start()
+# exp_thread는 exp 버튼(`start_exp_preview`)을 눌렀을 때만 시작합니다.
 
 if IS_WINDOWS:
     keyboard.add_hotkey("F1", start_command)

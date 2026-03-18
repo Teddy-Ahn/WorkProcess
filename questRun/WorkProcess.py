@@ -343,10 +343,10 @@ def cast_thunder_bolt():
     keyboard.release("s")
 
 def cast_teleport():
-    if moving_left or moving_right or moving_up:
-        keyboard.press("shift")
-        time.sleep(random.uniform(0.07, 0.11))
-        keyboard.release("shift")
+    # 텔레포트는 shift 키 버튼이므로, 호출 시점과 무관하게 한 번 누른다.
+    keyboard.press("shift")
+    time.sleep(random.uniform(0.07, 0.11))
+    keyboard.release("shift")
 
 def cast_buff():
         global skill_count, buff
@@ -626,12 +626,79 @@ def command_player():
 
     step = 0
     skill_count = 0
-    next_switch_time = 0.0
-    next_skill_tap_time = 0.0
-    force_turn_until = 0.0
-    PRE_SWITCH_STOP_SKILL_SEC = 0.5
-    FORCE_TURN_HOLD_SEC_NORMAL = 0.25
-    # 몬스터 감지는 명령 로직에서 제외 (항상 몹이 있다고 가정)
+
+    # 1 -> 2 -> 3 -> 2 -> 1 ... (반복). 각 구역은 20초 동안 유지하고 다음 구역으로 이동.
+    LEG_DURATION_SEC = 20.0
+    REGION_CYCLE = [1, 2, 3, 2]  # 1-2-3-2-1-2-3-2... 형태로 반복
+
+    # 구역 내 좌/우 전환(랜덤): 1~5초 간격
+    DIR_SWITCH_MIN_SEC = 1.0
+    DIR_SWITCH_MAX_SEC = 5.0
+
+    # 방향 전환 0.3초 전에 스킬 버튼 떼기
+    PRE_SWITCH_STOP_SKILL_SEC = 0.3
+
+    # 방향키는 "꾹"이 아니라 딸깍(탭)으로만 입력 (0.2~0.4초 랜덤)
+    TAP_DURATION_MIN_SEC = 0.2
+    TAP_DURATION_MAX_SEC = 0.4
+
+    # 구역 밖으로 밀려났을 때 복귀를 위한 보정 탭 간격
+    CORRECTION_TAP_INTERVAL_MIN_SEC = 0.2
+    CORRECTION_TAP_INTERVAL_MAX_SEC = 0.4
+
+    # 구역 경계에서 미세하게 벗어나는 걸 방지하기 위한 완충
+    HOLD_DEADBAND_PX = 2
+
+    TELEPORT_COOLDOWN_SEC = 3.0
+    next_teleport_allowed_time = 0.0
+
+    # 미니맵 x좌표를 3등분해서 1/2/3 구역 계산
+    def get_region(x_val: int, cl: int, cr: int) -> int:
+        if x_val < cl:
+            return 1
+        if x_val <= cr:
+            return 2
+        return 3
+
+    dir_switch_until = 0.0
+    move_dir = random.choice(["left", "right"])
+    skill_suppressed_until = 0.0
+    pending_dir_tap_at = 0.0
+    pending_dir_tap_key = None
+
+    # 구역 밖 복귀 이동 중에는 방향키를 홀드하고, 스킬은 딸깍(주기)만
+    SKILL_TAP_INTERVAL_OUTSIDE_SEC = 1.5
+    next_outside_skill_tap_time = 0.0
+
+    leg_index = 0
+    target_region = REGION_CYCLE[leg_index]
+    prev_target_region = None
+
+    # 현재 20초 구간(leg) 동안 방향 전환 탭 횟수(요청: 2~3회)
+    dir_tap_remaining = random.randint(2, 3)
+    next_correction_tap_time = 0.0
+
+    def tap_direction(dir_key: str, tap_duration_sec: float):
+        """방향키를 홀드하지 않고 짧게 탭한다."""
+        global moving_left, moving_right
+        # 혹시 모를 잔류 키 해제
+        release_movement()
+        keyboard.release("left")
+        keyboard.release("right")
+
+        if dir_key == "left":
+            keyboard.press("left")
+            # all_clear() 등과의 일관성을 위해 플래그도 갱신
+            moving_left = True
+            sleep(tap_duration_sec)
+            keyboard.release("left")
+            moving_left = False
+        else:
+            keyboard.press("right")
+            moving_right = True
+            sleep(tap_duration_sec)
+            keyboard.release("right")
+            moving_right = False
 
     while not stop_event.is_set():
         if time_time() < manual_pause_until:
@@ -644,53 +711,102 @@ def command_player():
             continue
 
         x, y = player_position
-
         if x is None:
             release_movement()
             cast_ice_strike_not_use()
             sleep(0.1)
             continue
 
-        # 미니맵 x좌표를 3등분해서 "가운데(중앙) 범위" 유지
-        center_left = int(mini_w / 3)
-        center_right = int(mini_w * 2 / 3)
         now = time_time()
 
-        in_center = center_left <= x <= center_right
+        # 미니맵 X를 3등분: [1][2][3]
+        center_left = int(mini_w / 3)
+        center_right = int(mini_w * 2 / 3)
+        current_region = get_region(x, center_left, center_right)
+        # 20초마다(시간 기준) 다음 구역으로 전환
+        if (now - leg_start) >= LEG_DURATION_SEC:
+            prev_target_region = target_region
+            leg_index = (leg_index + 1) % len(REGION_CYCLE)
+            target_region = REGION_CYCLE[leg_index]
+            leg_start = now
 
-        if not in_center:
-            # 중앙 범위를 벗어나면 중앙으로 복귀: 방향키는 누르고 있는 동안
-            # 스킬은 약 1.5초에 한 번만 "딸깍"(탭) 사용
-            cast_ice_strike_not_use()
-            if x < center_left:
-                press_right()
-            else:
-                press_left()
-
-            if now >= next_skill_tap_time:
-                cast_ice_strike()
-                next_skill_tap_time = now + 1.5
-        else:
-            # 중앙 범위에 있으면: 좌/우 2~8초 랜덤으로 번갈아 이동하며 스킬은 지속 사용(홀드)
-            next_skill_tap_time = 0.0
-            # 방향 전환 직전(0.5초 전)에는 스킬 홀드를 미리 끊어서 전환을 안정화
-            if next_switch_time > now and (next_switch_time - now) <= PRE_SWITCH_STOP_SKILL_SEC:
+            # 구역 전환 순간에는 랜덤 방향 타이머도 재설정
+            dir_switch_until = now + random.uniform(DIR_SWITCH_MIN_SEC, DIR_SWITCH_MAX_SEC)
+            dir_tap_remaining = random.randint(2, 3)
+            next_correction_tap_time = 0.0
+            # 2 -> (1 or 3) 전환일 때 텔레포트 1회
+            if prev_target_region == 2 and target_region in (1, 3) and now >= next_teleport_allowed_time:
                 cast_ice_strike_not_use()
+                cast_teleport()
+                next_teleport_allowed_time = now + TELEPORT_COOLDOWN_SEC
+                skill_suppressed_until = now + 0.2
 
-            if now >= next_switch_time:
-                direction = "right" if direction == "left" else "left"
-                next_switch_time = now + random.uniform(2.0, 8.0)
-                force_turn_until = now + FORCE_TURN_HOLD_SEC_NORMAL
-                log_message(f"방향 전환 → {direction} (다음 전환까지 {max(0.0, next_switch_time - now):.1f}초)")
+        # 초기 진입 시 타이머 설정
+        if dir_switch_until == 0.0:
+            dir_switch_until = now + random.uniform(DIR_SWITCH_MIN_SEC, DIR_SWITCH_MAX_SEC)
 
-            if direction == "left":
-                press_left()
-            else:
+        # 목표 구역의 경계값
+        if target_region == 1:
+            zone_left = 0
+            zone_right = center_left
+        elif target_region == 2:
+            zone_left = center_left
+            zone_right = center_right
+        else:
+            zone_left = center_right
+            zone_right = mini_w
+
+        # 데드밴드를 포함해서 "사냥 구역 안"으로 볼지 결정
+        # (경계 근처에서 출입이 잦을 때 매크로 입력이 흔들리는 것 방지)
+        in_target_hunt_zone = (zone_left - HOLD_DEADBAND_PX) <= x <= (zone_right + HOLD_DEADBAND_PX)
+
+        # 구역 밖이면: 방향키는 홀드로 복귀 이동, 스킬은 딸깍(주기)만 사용
+        if not in_target_hunt_zone:
+            # 진행 중인 방향 전환 스케줄이 있으면 취소
+            pending_dir_tap_at = 0.0
+            pending_dir_tap_key = None
+            skill_suppressed_until = 0.0
+            release_movement()
+
+            if x < zone_left - HOLD_DEADBAND_PX:
                 press_right()
+            elif x > zone_right + HOLD_DEADBAND_PX:
+                press_left()
 
-            # 몬스터 피격 등으로 방향 전환이 씹히는 경우가 있어,
-            # 전환 직후에는 일정 시간(기본 0.8초) 스킬 없이 방향키를 더 오래 밀어줌
-            if now < force_turn_until:
+            cast_ice_strike_not_use()
+            if now >= next_outside_skill_tap_time:
+                cast_ice_strike()
+                next_outside_skill_tap_time = now + random.uniform(1.4, 1.6)
+
+        # 구역 안이면: 스킬은 홀드, 방향 전환이 필요할 때만 반대키를 0.3초 전에 스킬 떼고 탭
+        else:
+            release_movement()
+
+            # 예정된 방향 전환(탭) 실행
+            if pending_dir_tap_at > 0.0 and now >= pending_dir_tap_at:
+                # 반대 방향 전환 키를 짧게 탭
+                tap_direction(pending_dir_tap_key, random.uniform(TAP_DURATION_MIN_SEC, TAP_DURATION_MAX_SEC))
+                move_dir = pending_dir_tap_key
+                pending_dir_tap_at = 0.0
+                pending_dir_tap_key = None
+
+                dir_tap_remaining -= 1
+                if dir_tap_remaining > 0:
+                    dir_switch_until = now + random.uniform(DIR_SWITCH_MIN_SEC, DIR_SWITCH_MAX_SEC)
+
+            # 다음 방향 전환 탭 예약(스킬은 아직 홀드, 0.3초 전에 떼도록 예약)
+            if pending_dir_tap_at == 0.0 and dir_tap_remaining > 0 and now >= dir_switch_until:
+                # 반대로 바꾸기
+                next_dir = "right" if move_dir == "left" else "left"
+                pending_dir_tap_key = next_dir
+                pending_dir_tap_at = now + PRE_SWITCH_STOP_SKILL_SEC
+
+                # 0.3초 전에 스킬 떼기
+                cast_ice_strike_not_use()
+                skill_suppressed_until = pending_dir_tap_at
+
+            # 스킬 홀드 유지(단, pending 전환 타이밍에서는 떼둠)
+            if now < skill_suppressed_until:
                 cast_ice_strike_not_use()
             else:
                 cast_ice_strike_use()

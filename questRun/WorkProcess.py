@@ -39,6 +39,19 @@ class Area:
     y_min: int
     y_max: int
 
+# 위치(구역) 판별용 미니맵 좌표 범위들
+# (location_detector/status 표시에서 사용)
+LOCATION_AREAS = {
+    "floor3": {"x_min": 52, "x_max": 72, "y_min": 101, "y_max": 104},
+    "floor3_1": {"x_min": 36, "x_max": 72, "y_min": 98, "y_max": 100},
+    "floor3_2": {"x_min": 39, "x_max": 72, "y_min": 93, "y_max": 97},
+    "floor3_3": {"x_min": 64, "x_max": 72, "y_min": 75, "y_max": 92},
+    "iso_point": {"x_min": 25, "x_max": 36, "y_min": 107, "y_max": 107},
+    "right_roof": {"x_min": 68, "x_max": 68, "y_min": 76, "y_max": 91},
+}
+
+AREA_OBJECTS = {name: Area(**values) for name, values in LOCATION_AREAS.items()}
+
 window_title = "MapleStory Worlds-Mapleland"
 mini_x, mini_y, mini_w, mini_h = 8, 31, 100, 255
 MINIMAP_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "minimap_region.txt")
@@ -663,6 +676,7 @@ def command_player():
     skill_suppressed_until = 0.0
     pending_dir_tap_at = 0.0
     pending_dir_tap_key = None
+    pending_dir_tap_count = 0
 
     # 구역 밖 복귀 이동 중에는 방향키를 홀드하고, 스킬은 딸깍(주기)만
     SKILL_TAP_INTERVAL_OUTSIDE_SEC = 1.5
@@ -670,10 +684,12 @@ def command_player():
 
     leg_index = 0
     target_region = REGION_CYCLE[leg_index]
+    leg_start = time_time()
     prev_target_region = None
+    last_status_log_time = 0.0
+    STATUS_LOG_INTERVAL_SEC = 2.0
 
-    # 현재 20초 구간(leg) 동안 방향 전환 탭 횟수(요청: 2~3회)
-    dir_tap_remaining = random.randint(2, 3)
+    # 방향 전환 시도 시, 같은 방향키를 2~3회 탭(피격/스킬로 전환 씹힘 방지)
     next_correction_tap_time = 0.0
 
     def tap_direction(dir_key: str, tap_duration_sec: float):
@@ -727,10 +743,10 @@ def command_player():
             leg_index = (leg_index + 1) % len(REGION_CYCLE)
             target_region = REGION_CYCLE[leg_index]
             leg_start = now
+            log_message(f"[구역전환] → target={target_region}")
 
             # 구역 전환 순간에는 랜덤 방향 타이머도 재설정
             dir_switch_until = now + random.uniform(DIR_SWITCH_MIN_SEC, DIR_SWITCH_MAX_SEC)
-            dir_tap_remaining = random.randint(2, 3)
             next_correction_tap_time = 0.0
             # 2 -> (1 or 3) 전환일 때 텔레포트 1회
             if prev_target_region == 2 and target_region in (1, 3) and now >= next_teleport_allowed_time:
@@ -758,6 +774,18 @@ def command_player():
         # (경계 근처에서 출입이 잦을 때 매크로 입력이 흔들리는 것 방지)
         in_target_hunt_zone = (zone_left - HOLD_DEADBAND_PX) <= x <= (zone_right + HOLD_DEADBAND_PX)
 
+        # 상태 로그(과도한 스팸 방지: 2초에 1회)
+        if (now - last_status_log_time) >= STATUS_LOG_INTERVAL_SEC:
+            remain = max(0, int(LEG_DURATION_SEC - (now - leg_start)))
+            mode = "IN" if in_target_hunt_zone else "OUT"
+            pending = (
+                "-"
+                if pending_dir_tap_at <= 0
+                else f"{max(0.0, pending_dir_tap_at - now):.1f}s x{pending_dir_tap_count}"
+            )
+            log_message(f"[사냥] target={target_region} now={current_region} {mode} remain={remain}s pending_turn={pending}")
+            last_status_log_time = now
+
         # 구역 밖이면: 방향키는 홀드로 복귀 이동, 스킬은 딸깍(주기)만 사용
         if not in_target_hunt_zone:
             # 진행 중인 방향 전환 스케줄이 있으면 취소
@@ -782,22 +810,23 @@ def command_player():
 
             # 예정된 방향 전환(탭) 실행
             if pending_dir_tap_at > 0.0 and now >= pending_dir_tap_at:
-                # 반대 방향 전환 키를 짧게 탭
-                tap_direction(pending_dir_tap_key, random.uniform(TAP_DURATION_MIN_SEC, TAP_DURATION_MAX_SEC))
+                # 반대 방향 전환 키를 2~3회 탭(각 탭 길이 랜덤)
+                for _ in range(max(1, pending_dir_tap_count)):
+                    tap_direction(pending_dir_tap_key, random.uniform(TAP_DURATION_MIN_SEC, TAP_DURATION_MAX_SEC))
+                    sleep(random.uniform(0.03, 0.08))
                 move_dir = pending_dir_tap_key
                 pending_dir_tap_at = 0.0
                 pending_dir_tap_key = None
-
-                dir_tap_remaining -= 1
-                if dir_tap_remaining > 0:
-                    dir_switch_until = now + random.uniform(DIR_SWITCH_MIN_SEC, DIR_SWITCH_MAX_SEC)
+                pending_dir_tap_count = 0
+                dir_switch_until = now + random.uniform(DIR_SWITCH_MIN_SEC, DIR_SWITCH_MAX_SEC)
 
             # 다음 방향 전환 탭 예약(스킬은 아직 홀드, 0.3초 전에 떼도록 예약)
-            if pending_dir_tap_at == 0.0 and dir_tap_remaining > 0 and now >= dir_switch_until:
+            if pending_dir_tap_at == 0.0 and now >= dir_switch_until:
                 # 반대로 바꾸기
                 next_dir = "right" if move_dir == "left" else "left"
                 pending_dir_tap_key = next_dir
                 pending_dir_tap_at = now + PRE_SWITCH_STOP_SKILL_SEC
+                pending_dir_tap_count = random.randint(2, 3)
 
                 # 0.3초 전에 스킬 떼기
                 cast_ice_strike_not_use()
